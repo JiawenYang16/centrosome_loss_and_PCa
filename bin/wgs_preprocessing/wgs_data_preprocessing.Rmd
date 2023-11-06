@@ -1,0 +1,610 @@
+---
+title: "wgs_data_preprocessing"
+author: "Jiawen yang"
+date: "`r Sys.Date()`"
+output:  rmdformats::material
+---
+<style type="text/css">
+
+body{ /* Normal  */
+      font-size: 12px;
+  }
+td {  /* Table  */
+  font-size: 12px;
+}
+h1.title {
+  font-size: 25px;
+  color: White;
+  font-family:"Arial";
+}
+h1 { /* Header 1 */
+  font-size: 24px;
+  color: DarkBlue;
+  font-family:"Arial";
+}
+h2 { /* Header 2 */
+    font-size: 22px;
+  color: DarkBlue;
+  font-family:"Arial";
+}
+h3 { /* Header 3 */
+  font-size: 20px;
+  font-family: "Times New Roman", Times, serif;
+  color: DarkBlue;
+}
+code.r{ /* Code block */
+    font-size: 12px;
+}
+pre { /* Code block - determines code spacing between lines */
+    font-size: 12px;
+}
+</style>
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Pre-processing of WGS data
+
+## BWA alignment 
+```{sh wgs data alignment, eval=F,include = T, echo = T}
+#!/bin/bash
+
+FILE_PATH="/xdisk/mpadi/jiawenyang/data/centrosome_loss/wgs"
+FILES=$(find ${FILE_PATH}/raw_data | grep 'fq.gz$' | rev | cut -d "_" -f2- | rev | sort -u)
+REF_FILE="/xdisk/mpadi/jiawenyang/src/genome_data/GRCh38.d1.vd1.fa"
+
+# BWA reference data indexing.
+bwa index ${REF_FILE} index_prefix
+
+# BWA alignment on samples.
+for file in $FILES;
+do
+    id=$(basename $file)
+    echo "processing files now."
+    if [ ! -f ${FILE_PATH}/bam_realigned/${id}.sam.gz ];
+    then
+        echo "Aligning file ${id}."
+        bwa mem ${REF_FILE} \
+                -M \
+                -t 28 \
+                -R "@RG\tID:Seq01p\tSM:${id}\tLB:L1" \
+                ${file}_1.fq.gz \
+                ${file}_2.fq.gz \
+                | gzip -3 > ${FILE_PATH}/bam_realigned/${id}.sam.gz
+    fi
+done
+```
+
+## Converting sam file to bam
+```{sh sam to bam, eval=F, include = T, echo = T}
+#!/bin/bash
+
+FILE_PATH="/xdisk/mpadi/jiawenyang/data/centrosome_loss/wgs"
+FILES=$(find ${FILE_PATH}/bam_realigned -name *.sam.gz)
+
+for file in $FILES;
+do
+    id=$(basename $file| rev | cut -d "." -f2- | rev )
+    echo "converting file ${id} now."
+     if [ ! -f ${FILE_PATH}/bam/${id}.bam ];
+     then
+        echo "unzipping file ${id}.sam"
+        gzip ${file} -d ${FILE_PATH}/bam_realigned/ | samtools view -S ${FILE_PATH}/bam_realigned/${id}.sam -b -o ${FILE_PATH}/bam_realigned/${id}.bam
+    fi
+done
+```
+
+## Sorting bam files
+```{sh sort bam files, eval = F, include = T, echo = T}
+#!/bin/bash
+
+FILE_PATH="/xdisk/mpadi/jiawenyang/data/centrosome_loss/wgs"
+FILES=$(find ${FILE_PATH}/bam_realigned -name *.bam)
+
+for file in $FILES;
+do
+    id=$(basename $file| rev | cut -d "." -f2- | rev )
+    echo "sorting files now."
+    if [ ! -f ${FILE_PATH}/bam_sorted/${id}.bam ];
+    then
+        samtools sort ${FILE_PATH}/bam_realigned/${id}.bam -o ${FILE_PATH}/bam_sorted/${id}.bam
+    fi
+done
+#Keep using the bam sorted data for later analyses (each bam file would have a .bai indexing file).
+```
+
+
+
+# Structural variants detection by SV callers 
+## DELLY
+```{sh DELLY, eval=F, include=T, echo=T}
+#!/bin/bash
+
+WORK_DIR="/xdisk/mpadi/jiawenyang/data/centrosome_loss/wgs"
+PATH_DIR="${WORK_DIR}/bam_sorted"
+OUT_DIR="/xdisk/mpadi/jiawenyang/result/centrosome_loss/delly/bcf"
+REF_FILE="/xdisk/mpadi/jiawenyang/src/genome_data/GRCh38.d1.vd1.fa"
+TUMOR_FILES=$(find ${PATH_DIR} | grep 'bam$' | grep 'CN_*' | sort -u)
+NORMAL_FILE=$(find ${PATH_DIR} | grep 'bam$' | grep 'PrEC_1_CKDN210017615-1A_H23WLDSX3_L2' | sort -u)
+DELLY_DIR="/xdisk/mpadi/jiawenyang/bin/delly/singularity"
+
+for tumor in $TUMOR_FILES;
+do
+    sample_id=$(basename ${tumor} | cut -d '.' -f 1)
+    normal_id=$(basename ${NORMAL_FILE} | cut -d '.' -f 1)
+    if [ ! -f ${OUT_DIR}/${sample_id}.bcf ];
+    then
+        echo "Calling structural variants for sample ${sample_id}."
+        singularity exec delly.sif \
+        delly call \
+              -x /xdisk/mpadi/jiawenyang/bin/delly/singularity/human.hg38.excl.tsv \
+              -t ALL \
+              -o ${OUT_DIR}/${sample_id}.bcf \
+              -g ${REF_FILE} \
+              ${tumor} \
+              ${NORMAL_FILE}
+    fi
+done
+```
+
+```{sh bcf to vcf, eval=F, include=T, echo=T}
+#!/bin/bash
+
+FILE_PATH="/xdisk/mpadi/jiawenyang/result/centrosome_loss/delly/bcf"
+FILES=$(find ${FILE_PATH} | grep '.bcf$' | sort -u)
+
+for i in $FILES;
+do
+    sample_id=$(echo ${i} | cut -d "/" -f 8 | cut -d "." -f 1)
+    bcftools convert -O v -o ${FILE_PATH}/vcf/${sample_id}.vcf ${i}
+done
+```
+
+```{sh vcf to bedpe, eval=F, include=T, echo=T}
+#!/bin/bash
+
+FILE_PATH="/xdisk/mpadi/jiawenyang/result/centrosome_loss/delly/vcf"
+FILES=$(find ${FILE_PATH} | grep '.vcf$' | sort -u)
+SVTOOLS_PATH="/xdisk/mpadi/jiawenyang/bin/svtools"
+
+for i in $FILES;
+do
+    sample_id=$(basename ${i} | cut -d "." -f 1)
+    cat ${i} | ${SVTOOLS_PATH}/svtools_v0.5.1.sif svtools vcfToBedpe > ${FILE_PATH}/${sample_id}.bedpe
+done
+```
+
+## MANTA
+```{sh MANTA, eval=F, include=T, echo=T}
+#1.Generate configuration file
+#!/bin/bash
+
+PATH_DIR="/xdisk/mpadi/jiawenyang/data/centrosome_loss/wgs/bam_sorted"
+REF_GENOME="/xdisk/mpadi/jiawenyang/src/bwa_index/GRCh38.d1.vd1.fa"
+OUT_DIR="/xdisk/mpadi/jiawenyang/result/centrosome_loss/manta"
+TUMOR_FILES=$(find ${PATH_DIR} | grep 'bam$' | grep 'CN_*' | sort -u)
+NORMAL_FILE=$(find ${PATH_DIR} | grep 'bam$' | grep 'PrEC_1_CKDN210017615-1A_H23WLDSX3_L2' | sort -u)
+MANTA_DIR="/xdisk/mpadi/jiawenyang/bin/manta"
+
+
+for tumor in $TUMOR_FILES;
+do
+    sample_id=$(basename ${tumor} | cut -d '.' -f 1)
+    normal_id=$(basename ${NORMAL_FILE} | cut -d '.' -f 1)
+    if [ ! -f ${OUT_DIR}/${sample_id}.vcf ];
+    then
+        echo "Calling structural variants for sample ${sample_id}."
+        singularity exec ${MANTA_DIR}/strelka2-manta_latest.sif \
+        configManta.py \
+        --normalBam ${NORMAL_FILE} \
+        --tumorBam ${tumor} \
+        --referenceFasta ${REF_GENOME} \
+        --runDir ${OUT_DIR}/${sample_id}
+    fi
+done
+
+#2.run configuration file for each sample
+#!/bin/bash
+
+PATH_DIR="/xdisk/mpadi/jiawenyang/result/centrosome_loss/manta"
+OUT_DIR="/xdisk/mpadi/jiawenyang/result/centrosome_loss/manta"
+MANTA_DIR="/xdisk/mpadi/jiawenyang/bin/manta"
+CONFIG_FILES_DIR=$(find ${PATH_DIR} -name "runWorkflow.py" | cut -d "/" -f 1-8 | sort -u )
+
+for config_dir in $CONFIG_FILES_DIR;
+do
+    singularity exec ${MANTA_DIR}/strelka2-manta_latest.sif \
+    ${config_dir}/runWorkflow.py -j 9
+
+done
+```
+
+## svABA
+```{sh svABA, eval=F, include=T, echo=T}
+#/bin/bash
+
+PATH_DIR="/xdisk/mpadi/jiawenyang/data/centrosome_loss/wgs/bam_sorted"
+REF_GENOME="/xdisk/mpadi/jiawenyang/src/bwa_index/GRCh38.d1.vd1.fa"
+OUT_DIR="/xdisk/mpadi/jiawenyang/result/centrosome_loss/svaba"
+TUMOR_FILES=$(find ${PATH_DIR} | grep 'bam$' | grep 'CN*' | sort -u)
+NORMAL_FILE=$(find ${PATH_DIR} | grep 'bam$' | grep 'PrEC_1_CKDN210017615-1A_H23WLDSX3_L2' | sort -u)
+SVABA_DIR="/xdisk/mpadi/jiawenyang/bin/svaba"
+
+
+for tumor in $TUMOR_FILES;
+do
+    sample_id=$(basename ${tumor} | cut -d '.' -f 1)
+    normal_id=$(basename ${NORMAL_FILE} | cut -d '.' -f 1)
+    if [ ! -f ${OUT_DIR}/${sample_id}.vcf ];
+    then
+        echo "Calling structural variants for sample ${sample_id}."
+        singularity exec ${SVABA_DIR}/svaba-nf_latest.sif \
+        svaba run -t ${tumor} \
+                  -n ${NORMAL_FILE} \
+                  -G ${REF_GENOME} \
+                  -p 3 \
+                  -a ${sample_id}
+       mv ${sample_id}*  ${OUT_DIR}/
+    fi
+done
+
+#/bin/bash
+
+DATA_DIR="/xdisk/mpadi/jiawenyang/result/centrosome_loss/svaba"
+TUMOR_FILES=$(find ${DATA_DIR} | grep 'somatic.sv.vcf$' | grep 'CN*' | sort -u)
+SVTOOLS_PATH="/xdisk/mpadi/jiawenyang/bin/svtools"
+
+for tumor in $TUMOR_FILES;
+do
+    sample_id=$(basename ${tumor} | cut -d '.' -f 1)
+    if [ ! -f ${DATA_DIR}/${sample_id}.bedpe ];
+    then
+        echo "Calling structural variants for sample ${sample_id}."
+        cat ${tumor} | ${SVTOOLS_PATH}/svtools_v0.5.1.sif svtools vcftobedpe > ${DATA_DIR}/${sample_id}.bedpe
+    fi
+done
+    
+```
+
+# Copy number variants detection by CNV callers
+
+## Control-FREEC
+```{sh Control-FREEC, eval=F, include=T, echo=T}
+#convert bam to pileup format for LOH anaylsis in Control-FREEC
+
+#Configuration file for Control Freec#
+[general]
+
+##parameters chrLenFile and ploidy are required.
+chrLenFile = /xdisk/mpadi/jiawenyang/src/control-freec/hg38.len
+ploidy = 2
+breakPointThreshold = 0.8
+window = 1000
+#step=10000
+chrFiles = /xdisk/mpadi/jiawenyang/src/control-freec/hg38ChromFa/
+forceGCcontentNormalization = 0
+sex=XY
+outputDir = /xdisk/mpadi/jiawenyang/result/centrosome_loss/control-freec-no-window-set
+contaminationAdjustment = TRUE
+BedGraphOutput = TRUE
+
+[sample]
+
+mateFile = /xdisk/mpadi/jiawenyang/data/centrosome_loss/wgs/bam_sorted/CN_1_1_CKDN200002992-1A_H57L2DSXY_L1.bam
+inputFormat = pileup
+mateOrientation = FR
+
+##use "mateOrientation=0" for sorted .SAM and .BAM
+
+[control]
+
+mateFile = /xdisk/mpadi/jiawenyang/data/centrosome_loss/wgs/bam_sorted/PrEC_1_CKDN210017615-1A_H23WLDSX3_L2.bam
+inputFormat = pileup
+mateOrientation = FR
+
+[BAF]
+
+##use the following options to calculate B allele frequency profiles and genotype status. This option can only be used if "inputFormat=pileup"
+#makePileup = /xdisk/mpadi/jiawenyang/src/control-freec/dbSNP151.hg38-commonSNP_minFreq5Perc_with_CHR.vcf
+#fastaFile = /xdisk/mpadi/jiawenyang/src/bwa_index/GRCh38.d1.vd1.fa
+
+```
+
+## Sequenza
+```{sh Sequenza, eval=F, include=T, echo=T}
+#!/bin/bash
+module load python/3.9
+module load samtools
+python3 -m venv --system-site-packages ~/mypyenv
+source ~/mypyenv/bin/activate
+
+DATA_DIR="/xdisk/mpadi/jiawenyang/data/centrosome_loss/wgs/bam_sorted"
+REF_DIR="/xdisk/mpadi/jiawenyang/src"
+OUT_DIR="/xdisk/mpadi/jiawenyang/result/centrosome_loss/sequenza"
+sseq_dir="/xdisk/mpadi/jiawenyang/result/centrosome_loss/sequenza/small-seqz"
+TUMOR_FILES=$(find ${DATA_DIR} -name "CN*" | sort -u)
+NORMAL_FILE="/xdisk/mpadi/jiawenyang/data/centrosome_loss/wgs/bam_sorted/PrEC_1_CKDN210017615-1A_H23WLDSX3_L2.bam"
+
+sequenza-utils gc_wiggle --fasta ${REF_DIR}/genome_data/GRCh38.d1.vd1.fa.gz 
+                         -w 1000  #keep consistent with other methods or optimize for the best window size for CNV detection.
+                         -o ${REF_DIR}/sequenza/genome_gc1000.wig.gz
+
+for tumor in $TUMOR_FILES;
+do
+    sample_id=$(basename ${tumor} | cut -d '.' -f 1)
+    if [ ! -f ${OUT_DIR}/${sample_id}.seqz.gz ];
+    then
+    echo "processing sample ${sample_id}"
+    sequenza-utils bam2seqz -n ${NORMAL_FILE} \
+                            -t ${tumor} \
+                            -gc ${REF_DIR}/sequenza/genome_gc1000.wig.gz \
+                            --fasta ${REF_DIR}/genome_data/GRCh38.d1.vd1.fa.gz \
+                            -o ${OUT_DIR}/${sample_id}.seqz.gz
+    sequenza-utils seqz_binning --seqz ${sseq_dir}/${sample_id}.seqz.gz \
+                                -w 50 \
+                                -o ${sseq_dir}/${sample_id}.small.seqz.gz
+    
+    fi
+done
+```
+
+```{r sequenza_r, eval = F, include=TRUE, echo = TRUE}
+# Performing segmentation and calculate for CNV
+library(sequenza)
+remotes::install_github("ShixiangWang/copynumber", force = T) #adapted to hg38 reference genome for segmentation
+library(copynumber)
+
+data.files<-list.files("/xdisk/mpadi/jiawenyang/result/centrosome_loss/sequenza_gc1000/small-seqz", pattern = "*.small.seqz$",
+                       full.names = T, recursive = T)
+chromosome_list<-c(paste0("chr", seq(1:22)), "chrX", "chrY")
+
+for (i in 1:length(data.files)){
+  data.file<-data.files[i]
+  sample_id<-strsplit(data.file, "/")[[1]][9]
+  sample_id<-strsplit(sample_id, "[.]")[[1]][1]
+  #Sys.setenv(VROOM_CONNECTION_SIZE = 131072 * 50000)
+  test <- sequenza.extract(data.file, 
+                           assembly = "hg38", 
+                           breaks.method = "het")
+  CP <- sequenza.fit(test, female = FALSE)
+  cint <- get.ci(CP)
+  cellularity <- cint$max.cellularity
+  ploidy <- cint$max.ploidy
+  seg.tab <- na.exclude(do.call(rbind, test$segments))
+  cn.alleles <- baf.bayes(Bf = seg.tab$Bf, 
+                          depth.ratio = seg.tab$depth.ratio,
+                          cellularity = cellularity, 
+                          ploidy = ploidy,
+                          avg.depth.ratio = test$avg.depth.ratio) 
+  save.image(file = paste0("/xdisk/mpadi/jiawenyang/result/centrosome_loss/sequenza_gc1000/rdata/", sample_id, ".Rdata"))
+}
+
+# Generating plot and CN table
+
+FILE.PATH = c("/xdisk/mpadi/jiawenyang/result/centrosome_loss/sequenza_gc1000/rdata")
+FILES<-list.files(FILE.PATH, recursive = T, full.names = T)
+
+for (i in 1:length(FILES)){
+id <- substr(basename(FILES[i]), 9, nchar(basename(FILES[i]))-6)
+load(FILES[i])
+print(id)
+sequenza.results(sequenza.extract = test,
+                 cp.table = CP,
+                 sample.id = id, 
+                 out.dir="/xdisk/mpadi/jiawenyang/result/centrosome_loss/sequenza_gc1000/graph/")
+}
+```
+
+
+## CNVkit
+```{sh CNVkit, eval=F, include=T, echo=T}
+#!/bin/bash
+
+DATA_PATH="/xdisk/mpadi/jiawenyang/data/centrosome_loss/wgs/bam_sorted"
+CNVKIT_PATH="/xdisk/mpadi/jiawenyang/bin/cnvkit"
+REF_PATH="/xdisk/mpadi/jiawenyang/src"
+OUT_DIR="/xdisk/mpadi/jiawenyang/result/centrosome_loss/cnvkit_wgs"
+TUMOR_FILES=$(find ${DATA_PATH} -name "CN*" -and -name "*.bam" | sort -u)
+NORMAL_FILE="/xdisk/mpadi/jiawenyang/data/centrosome_loss/wgs/bam_sorted/PrEC_1_CKDN210017615-1A_H23WLDSX3_L2.bam"
+
+# The wgs method uses bin size as 1000 and other parameters in the documentation https://cnvkit.readthedocs.io/en/stable/nonhybrid.html#whole-genome-sequencing-wgs 
+
+singularity exec ${CNVKIT_PATH}/cnvkit_latest.sif \
+cnvkit.py batch ${TUMOR_FILES} --normal ${NORMAL_FILE} \
+     -m wgs \
+     -f ${REF_PATH}/bwa_index/GRCh38.d1.vd1.fa \
+     --annotate ${REF_PATH}/cnvkit/gencode.v36.annotation.gtf \
+     -d ${OUT_DIR} \
+     --scatter \
+     --diagram
+```
+
+```{sh cnvkit_cns_to_vcf, eval = F, include = T, echo = T}
+#!/bin/bash
+
+CNVKIT_PATH="/xdisk/mpadi/jiawenyang/bin/cnvkit"
+OUT_DIR="/xdisk/mpadi/jiawenyang/result/centrosome_loss/cnvkit_wgs"
+TUMOR_FILES=$(find ${OUT_DIR} -name "CN*" -and -name "*.targetcoverage.cnn" | sort -u)
+NORMAL_FILE="/xdisk/mpadi/jiawenyang/result/centrosome_loss/cnvkit_wgs/reference.cnn"
+
+for tumor in $TUMOR_FILES;
+do
+    sample_id=$(basename ${tumor} | cut -d '.' -f 1)
+    #normal_id=$(basename ${NORMAL_FILE})
+     if [ ! -f ${OUT_DIR}/${sample_id}.cnv.vcf ];
+     then
+         echo "visualizing for sample ${sample_id}."
+         singularity exec ${CNVKIT_PATH}/cnvkit_latest.sif \
+         cnvkit.py export vcf ${OUT_DIR}/${sample_id}.cns -x male --male-reference -i ${sample_id} -o ${OUT_DIR}/${sample_id}.cnv.vcf
+     fi
+done
+```
+
+```{sh cnvkit_vcf_to_bedpe, eval = F, include = T, echo = T}
+#!/bin/bash
+
+SVTOOLS_PATH="/xdisk/mpadi/jiawenyang/bin/svtools"
+OUT_DIR="/xdisk/mpadi/jiawenyang/result/centrosome_loss/cnvkit_wgs"
+TUMOR_FILES=$(find ${OUT_DIR} -name "CN*" -and -name "*.targetcoverage.cnn" | sort -u)
+
+for tumor in $TUMOR_FILES;
+do
+    sample_id=$(basename ${tumor} | cut -d '.' -f 1)
+    #normal_id=$(basename ${NORMAL_FILE})
+     if [ ! -f ${OUT_DIR}/${sample_id}.bedpe ];
+     then
+         echo "converting for sample ${sample_id}."
+         singularity exec ${SVTOOLS_PATH}/svtools_v0.5.1.sif \
+         svtools vcftobedpe -i ${OUT_DIR}/${sample_id}.cnv.vcf -o ${OUT_DIR}/${sample_id}.bedpe
+     fi
+done
+```
+
+```{sh cnvkit heatmap, eval = F, include = F, echo = T}
+apptainer exec /xdisk/mpadi/jiawenyang/bin/cnvkit/cnvkit_latest.sif cnvkit.py heatmap `cat cnvkit_wgs_cns.txt` cnvkit_heatmap_wgs.pdf
+```
+
+## CNVnator (not somatic cnv, but germline cnv for all samples)
+```{sh CNVnator, eval=F, include=T, echo=T}
+#!/bin/bash
+
+DATA_PATH="/xdisk/mpadi/jiawenyang/data/centrosome_loss/wgs/bam_sorted"
+CNVNATOR_PATH="/xdisk/mpadi/jiawenyang/bin/cnvnator"
+REF_PATH="/xdisk/mpadi/jiawenyang/src"
+TUMOR_FILES=$(find ${DATA_PATH} -name "*.bam" | sort -u)
+OUT_DIR="/xdisk/mpadi/jiawenyang/result/centrosome_loss/cnvnator"
+
+for tumor in $TUMOR_FILES;
+do
+    sample_id=$(basename ${tumor} | cut -d '.' -f 1)
+    if [ ! -f ${OUT_DIR}/${sample_id}.root ];
+    then
+    echo "Extracting read mapping from ${sample_id}"
+    #Extract read mapping
+    apptainer exec ${CNVNATOR_PATH}/cnvnator2_latest.sif \
+    cnvnator -root ${OUT_DIR}/${sample_id}.root -genome GRCh38 -tree ${tumor} -chrom $(seq -f 'chr%g' 1 22) chrX chrY
+    fi
+
+    #Generate histogram
+     apptainer exec ${CNVNATOR_PATH}/cnvnator2_latest.sif \
+     cnvnator -root ${OUT_DIR}/${sample_id}.root -his 1000 -d /xdisk/mpadi/jiawenyang/src/cnvnator/hg38ChromFa
+    #Calculate statistics
+     apptainer exec ${CNVNATOR_PATH}/cnvnator2_latest.sif \
+     cnvnator -root ${OUT_DIR}/${sample_id}.root -stat 1000
+
+    #Partition
+     apptainer exec ${CNVNATOR_PATH}/cnvnator2_latest.sif \
+     cnvnator -root ${OUT_DIR}/${sample_id}.root -partition 1000
+
+    #Call CNVS
+     apptainer exec ${CNVNATOR_PATH}/cnvnator2_latest.sif \
+     cnvnator -root ${OUT_DIR}/${sample_id}.root -call 1000 > ${OUT_DIR}/${sample_id}.txt
+
+    #convert txt to vcf
+     apptainer exec ${CNVNATOR_PATH}/cnvnator2_latest.sif \
+     cnvnator2VCF.pl -prefix ${sample_id} -reference GRCh38 ${OUT_DIR}/${sample_id}.txt /xdisk/mpadi/jiawenyang/src/cnvnator/hg38ChromFa > ${OUT_DIR}/${sample_id}.vcf
+
+done
+```
+
+```{sh mutect2 gatk, eval=F, include=TRUE, echo=TRUE}
+#!/bin/bash
+
+PATH_DIR="/xdisk/mpadi/jiawenyang/data/centrosome_loss/wgs/bam_sorted"
+REF_GENOME="/xdisk/mpadi/jiawenyang/src"
+OUT_DIR="/xdisk/mpadi/jiawenyang/result/centrosome_loss/mutect2"
+TUMOR_FILES=$(find ${PATH_DIR} | grep 'bam$' | grep 'CN*' | sort -u)
+NORMAL_FILE=$(find ${PATH_DIR} | grep 'bam$' | grep 'PrEC_1_CKDN210017615-1A_H23WLDSX3_L2' | sort -u)
+MUTECT2_DIR="/xdisk/mpadi/jiawenyang/bin/mutect2"
+gatk_src="/xdisk/mpadi/jiawenyang/src/gatk"
+
+
+echo "Generating panel of normals for Mutect2 anaylsis"
+gatk Mutect2 -R ${gatk_src}/Homo_sapiens_assembly38.fasta \
+             -I ${NORMAL_FILE} \
+             -O ${gatk_src}/pon.vcf.gz
+
+
+for tumor in $TUMOR_FILES;
+do
+    sample_id=$(basename ${tumor} | cut -d '.' -f 1)
+    normal_id=$(basename ${NORMAL_FILE} | cut -d '.' -f 1)
+    if [ ! -f ${OUT_DIR}/${sample_id}.somatic.vcf.gz ];
+    then
+        echo "Calling structural variants for sample ${sample_id}."  #in slurm file, remeber to load gatk module from HPC
+
+        gatk Mutect2 -I ${tumor} \
+                     -tumor ${sample_id} \
+                     -I ${NORMAL_FILE} \
+                     -normal ${normal_id} \
+                     -R ${gatk_src}/Homo_sapiens_assembly38.fasta \
+                     --germline-resource ${gatk_src}/af-only-gnomad.hg38.vcf.gz \
+                     --panel-of-normals ${gatk_src}/pon.vcf.gz \
+                     -O ${OUT_DIR}/${sample_id}.somatic.vcf.gz
+    fi
+done
+```
+
+## FACETS
+```{bash Facets snp-pileup, eval = F, include = T, echo = T}
+#!/bin/bash
+
+PATH_DIR="/xdisk/mpadi/jiawenyang/data/centrosome_loss/wgs/bam_sorted"
+TUMOR_FILES=$(find ${PATH_DIR} | grep 'bam$' | grep 'CN_*' | sort -u)
+NORMAL_FILE=$(find ${PATH_DIR} | grep 'bam$' | grep 'PrEC_1_CKDN210017615-1A_H23WLDSX3_L2' | sort -u)
+#FILES=$(find ${PATH_DIR} -name "*.bam")
+FACETS_PATH="/home/u16/jiawenyang/bin"
+SRC_VCF="/xdisk/mpadi/jiawenyang/src/facets"
+OUT_DIR="/xdisk/mpadi/jiawenyang/result/centrosome_loss/facets"
+
+for tumor in $TUMOR_FILES;
+do
+    sample_id=$(basename ${tumor} | cut -d '.' -f 1)
+    normal_id=$(basename ${NORMAL_FILE} | cut -d '.' -f 1)
+    if [ ! -f ${OUT_DIR}/${sample_id}.out.gz ];
+    then
+        echo "Calling structural variants for sample ${sample_id}."
+        ${FACETS_PATH}/snp-pileup \
+        -g \
+        -q15 \
+        -Q20 \
+        -P100 \
+        -r25,0 \
+        ${SRC_VCF}/00-common_all.vcf.gz \ #sorted and indexed
+        ${OUT_DIR}/${sample_id}.out.gz \
+        ${NORMAL_FILE} \
+        ${tumor}
+    fi
+done
+```
+
+```{r Facets processing, eval = F, include = T, echo = T}
+#!/bin/Rscript
+
+library("pctGCdata")
+library("facets")
+set.seed(1234)
+rcmat = readSnpMatrix("/xdisk/mpadi/jiawenyang/result/centrosome_loss/facets/CN2_2b_CKDN200005067-1A_H5T7VDSXY_L1.out.gz")
+xx = preProcSample(rcmat,gbuild = "hg38")
+oo=procSample(xx,cval=150)
+fit=emcncf(oo)
+
+#plot
+pdf("/xdisk/mpadi/jiawenyang/result/centrosome_loss/facets/CN2_2b_CKDN200005067-1A_H5T7VDSXY_L1.pdf")
+plotSample(x=oo,emfit=fit)
+logRlogORspider(oo$out, oo$dipLogR)
+while (!is.null(dev.list()))  dev.off()
+#
+save(fit,file = "/xdisk/mpadi/jiawenyang/result/centrosome_loss/facets/CN2_2b_CKDN200005067-1A_H5T7VDSXY_L1.Rdata")
+# output purity and ploidy -----
+purity=fit$purity
+purity=round(purity,2)
+ploidy=fit$ploidy
+ploidy=round(ploidy,1)
+output <- paste("CN2_2b_CKDN200005067-1A_H5T7VDSXY_L1", purity, ploidy, sep = "\t")
+write(output, "/xdisk/mpadi/jiawenyang/result/centrosome_loss/facets/CN2_2b_CKDN200005067-1A_H5T7VDSXY_L1.txt", append = TRUE)
+```
+
