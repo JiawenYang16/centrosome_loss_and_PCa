@@ -1,5 +1,5 @@
 ---
-title: "wgs_data_preprocessing"
+title: "Transient centrosome-loss WGS data processing"
 author: "Jiawen yang"
 date: "`r Sys.Date()`"
 output:  rmdformats::material
@@ -46,9 +46,24 @@ pre { /* Code block - determines code spacing between lines */
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
+```{r load html libraries, include = F, echo = F, eval = T}
+library(fontawesome)
+library(htmltools)
+back_to_top <- tags$a(
+  href = "#top",
+  style = "text-decoration: none;",
+  fa("arrow-circle-up", fill = "steelblue"),
+  "Back to top"
+)
+```
+
 # Pre-processing of WGS data
 
-## BWA alignment 
+<div id="top1"></div>
+
+**_[back to home](/centrosome_loss_and_PCa/index.html)_**
+
+## Performing BWA alignment 
 ```{sh wgs data alignment, eval=F,include = T, echo = T}
 #!/bin/bash
 
@@ -116,9 +131,14 @@ done
 #Keep using the bam sorted data for later analyses (each bam file would have a .bai indexing file).
 ```
 
-
+<a href="#top1" class="back-to-top">Back to top</a>
 
 # Structural variants detection by SV callers 
+
+<div id="top2"></div>
+
+**_[back to home](/centrosome_loss_and_PCa/index.html)_**
+
 ## DELLY
 ```{sh DELLY, eval=F, include=T, echo=T}
 #!/bin/bash
@@ -269,7 +289,13 @@ done
     
 ```
 
+<a href="#top2" class="back-to-top">Back to top</a>
+
 # Copy number variants detection by CNV callers
+
+ <div id="top3"></div>
+
+**_[back to home](/centrosome_loss_and_PCa/index.html)_**
 
 ## Control-FREEC
 ```{sh Control-FREEC, eval=F, include=T, echo=T}
@@ -278,7 +304,7 @@ done
 #Configuration file for Control Freec#
 [general]
 
-##parameters chrLenFile and ploidy are required.
+## parameters chrLenFile and ploidy are required.
 chrLenFile = /xdisk/mpadi/jiawenyang/src/control-freec/hg38.len
 ploidy = 2
 breakPointThreshold = 0.8
@@ -297,7 +323,7 @@ mateFile = /xdisk/mpadi/jiawenyang/data/centrosome_loss/wgs/bam_sorted/CN_1_1_CK
 inputFormat = pileup
 mateOrientation = FR
 
-##use "mateOrientation=0" for sorted .SAM and .BAM
+## use "mateOrientation=0" for sorted .SAM and .BAM
 
 [control]
 
@@ -307,7 +333,7 @@ mateOrientation = FR
 
 [BAF]
 
-##use the following options to calculate B allele frequency profiles and genotype status. This option can only be used if "inputFormat=pileup"
+## use the following options to calculate B allele frequency profiles and genotype status. This option can only be used if "inputFormat=pileup"
 #makePileup = /xdisk/mpadi/jiawenyang/src/control-freec/dbSNP151.hg38-commonSNP_minFreq5Perc_with_CHR.vcf
 #fastaFile = /xdisk/mpadi/jiawenyang/src/bwa_index/GRCh38.d1.vd1.fa
 
@@ -510,6 +536,7 @@ do
 done
 ```
 
+## Mutect2
 ```{sh mutect2 gatk, eval=F, include=TRUE, echo=TRUE}
 #!/bin/bash
 
@@ -584,6 +611,7 @@ done
 ```{r Facets processing, eval = F, include = T, echo = T}
 #!/bin/Rscript
 
+#Take CTN9-T4 (CN2_2b) as example
 library("pctGCdata")
 library("facets")
 set.seed(1234)
@@ -597,8 +625,8 @@ pdf("/xdisk/mpadi/jiawenyang/result/centrosome_loss/facets/CN2_2b_CKDN200005067-
 plotSample(x=oo,emfit=fit)
 logRlogORspider(oo$out, oo$dipLogR)
 while (!is.null(dev.list()))  dev.off()
-#
 save(fit,file = "/xdisk/mpadi/jiawenyang/result/centrosome_loss/facets/CN2_2b_CKDN200005067-1A_H5T7VDSXY_L1.Rdata")
+
 # output purity and ploidy -----
 purity=fit$purity
 purity=round(purity,2)
@@ -608,3 +636,6 @@ output <- paste("CN2_2b_CKDN200005067-1A_H5T7VDSXY_L1", purity, ploidy, sep = "\
 write(output, "/xdisk/mpadi/jiawenyang/result/centrosome_loss/facets/CN2_2b_CKDN200005067-1A_H5T7VDSXY_L1.txt", append = TRUE)
 ```
 
+ <a href="#top3" class="back-to-top">Back to top</a>
+
+**_[back to home](/centrosome_loss_and_PCa/index.html)_**
