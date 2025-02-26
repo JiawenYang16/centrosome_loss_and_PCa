@@ -1,0 +1,110 @@
+---
+title: "Transient centrosome loss-induced chromosomal instability produces an oncogenic genotype in cultured prostate epithelial cells that correlates with poor clinical outcomes"
+date: "`r Sys.Date()`"
+output:  rmdformats::material
+---
+<style type="text/css">
+
+body{ /* Normal  */
+      font-size: 13px;
+      font-weight: bold;
+      color: #2c3e50;
+  }
+td {  /* Table  */
+  font-size: 12px;
+}
+h1.title {
+  font-size: 18px;
+  color: White;
+  font-family:"Arial";
+}
+h1 { /* Header 1 */
+  font-size: 24px;
+  color: DarkBlue;
+  font-family:"Arial";
+}
+h2 { /* Header 2 */
+    font-size: 22px;
+  color: DarkBlue;
+  font-family:"Arial";
+}
+h3 { /* Header 3 */
+  font-size: 20px;
+  font-family: "Times New Roman", Times, serif;
+  color: DarkBlue;
+}
+code.r{ /* Code block */
+    font-size: 12px;
+}
+pre { /* Code block - determines code spacing between lines */
+    font-size: 12px;
+}
+.github-link { color: steelblue; text-decoration: none; font-weight: bold; } .github-link:hover { color: darkblue; text-decoration: underline; }
+
+</style>
+---
+
+```{r, include = F, echo = F, eval = T}
+library(fontawesome)
+library(htmltools)
+
+github_link <- htmltools::tags$a(
+  href = "https://github.com/Jiawenyang16/centrosome_loss_and_PCa",
+  class = "github-link",
+  fa("github"), "Go back to github repository"
+)
+```
+
+ <p>
+        Authors: Jiawen Yang, Diogo de Oliveira Pessoa, John M. Ryniawec, Matthew R. Coope, Daniel W. Buster, Emily Loertscher, Mengdie Wang, Chen Chen, Anne E. Cress, 
+        <span data-envelope="true" data-email="gcrogers@arizona.edu">Gregory C. Rogers</span>, and 
+        <span data-envelope="true" data-email="mpadi@arizona.edu">Megha Padi</span>.
+ </p>
+
+ <script>
+        document.querySelectorAll('[data-envelope="true"]').forEach(element => {
+            const email = element.getAttribute('data-email'); // Get the email address
+            const envelopeIcon = document.createElement('a');
+            envelopeIcon.href = `mailto:${email}`; // Set the mailto link
+            envelopeIcon.innerHTML = "✉️"; // Unicode for envelope icon
+            envelopeIcon.style.textDecoration = "none"; // Optional: Remove underline
+            envelopeIcon.style.verticalAlign = "super"; // Position as superscript
+            envelopeIcon.style.marginLeft = "2px"; // Optional: Add some spacing
+            element.appendChild(envelopeIcon); // Add the icon after the name
+        });
+ </script>
+ <br>
+ <br>
+<div id="hello" class="greeting message" style="color: black; background-color: #fbf7e6; padding: 24px;">
+
+**Table of Contents**
+
+- [Transient centrosome-loss WGS data processing](/centrosome_loss_and_PCa/bin/wgs_data_preprocessing.html)
+<br>
+<br>
+- [Genomic characterization of transient centrosome-loss tumor model](/centrosome_loss_and_PCa/bin/structural_variation_summarization.html)
+<br>
+<br>
+- [Characterizing copy number (CN) signatures of transient centrosome-loss cells and their clinical predictive value](/centrosome_loss_and_PCa/bin/copy_number_variation_summarization.html)
+<br>
+<br>
+- [Transcriptomic analyses of transient centrosome-loss samples](/centrosome_loss_and_PCa/bin/RNAseq_transcriptomic_analysis.html)
+<br>
+<br>
+- [Transient centrosome-loss CN-signature associated genes predict poor outcomes in independent PCa cohorts at transcriptomic level](/centrosome_loss_and_PCa/bin/CIN_signature_genes_summarization.html)
+<br>
+<br>
+- [Copy number signatures assignment and chromothripsis detection in transient centrosome-loss samples ](/centrosome_loss_and_PCa/bin/CN_signatures_assignment_and_chromothripsis_detection.html)
+<br>
+<br>
+- [Prostate cancer single-cell samples reveal focal CNVs that enhance cancer cell fitness](/centrosome_loss_and_PCa/bin/PCa_scRNAseq_cell_population_analysis.html)
+</div>
+
+```{r displaying sequenza_SigProfilerAssignment result, include = T, echo = F, eval = T}
+knitr::include_graphics("/xdisk/mpadi/jiawenyang/bin/centrosome_loss_paper/work_flow.png")
+```
+
+last updated on `r Sys.Date()`
+by [Jiawen Yang](mailto:jiawenyang@arizona.edu) 
+<br>
+[Go back to github repository](https://github.com/Jiawenyang16/centrosome_loss_and_PCa){.github-link}
