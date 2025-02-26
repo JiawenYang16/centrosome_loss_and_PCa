@@ -1,6 +1,5 @@
 ---
 title: "Genomic characterization of transient centrosome-loss tumor model"
-author: "Jiawen yang"
 date: "`r Sys.Date()`"
 output:  rmdformats::material
 ---
@@ -52,6 +51,10 @@ gc()
 
 # Characterizing SV profiles of transient centrosome-loss samples
 
+<div id="top1"></div>
+
+**_[back to home](/centrosome_loss_and_PCa/index.html)_**
+
 ## Loading and organizing structural variation calls from DELLY output 
 
 ### Loading delly data
@@ -82,7 +85,6 @@ for (i in 1:length(FILES_delly)){
   sv_tra[,"sample"]<-rep(sample_id, nrow(sv_tra))
   sv_tra_all[[sample_id]]<-sv_tra
 }
-#saveRDS(sv_tra_all, file = "/xdisk/mpadi/jiawenyang/result/centrosome_loss/circos/sv_delly_tra.RDS")
 
 other_sv_types<-c("INV", "DEL", "DUP")
 
@@ -100,7 +102,6 @@ for (i in 1:length(FILES_delly)){
   sv_others[,"sample"]<-rep(sample_id, nrow(sv_others))
   sv_others_all[[sample_id]]<-sv_others
 }
-#saveRDS(sv_others_all, file = "/xdisk/mpadi/jiawenyang/result/centrosome_loss/circos/sv_delly_others.RDS")
 ```
 
 ### Binning SV data
@@ -201,7 +202,6 @@ generate_sv_circosplot<-function(sample_id){
   links_color = rep(color_df[unique(sv_tra1$chr), "color"], table(sv_tra1$chr)[unique(sv_tra1$chr)])
   
   #Generate plot
-  #pdf(file = paste0("/xdisk/mpadi/jiawenyang/result/centrosome_loss/circos/plots/", sample_id, "_CircosPlot.pdf"))
   print(sample_id)
   circos.par("start.degree" = 90, "track.height" = 0.25)
   circos.initializeWithIdeogram(species='hg38', chromosome.index = paste0("chr", c(1:22, "X", "Y")))
@@ -216,7 +216,6 @@ generate_sv_circosplot<-function(sample_id){
   })
   circos.genomicLink(sv_tra1, sv_tra2, rou = get_most_inside_radius(), border = links_color)
   circos.clear()
-  #dev.off()
 }
 
 for (i in 1:length(names(files_sv_tra))){
@@ -254,7 +253,6 @@ library(GenomicRanges)
   links_color = rep(color_df[unique(sv_tra1$chr), "color"], table(sv_tra1$chr)[unique(sv_tra1$chr)])
   
 #Generate plot
-  #pdf(file = "/xdisk/mpadi/jiawenyang/result/centrosome_loss/circos/cn9_cn9r2_2_CircosPlot_common_traslocations.pdf")
   circos.par("start.degree" = 90, "track.height" = 0.25)
   circos.initializeWithIdeogram(species='hg38', chromosome.index = paste0("chr", c(1:22, "X", "Y")))
   
@@ -280,7 +278,6 @@ library(GenomicRanges)
     
   circos.genomicLink(sv_tra1, sv_tra2, rou = get_most_inside_radius(), border = links_color)
   circos.clear()
-  #dev.off()
 ```
 
 ### Generating Heatmap for SVs per bin of all samples
@@ -295,7 +292,6 @@ files_bin_sv_counts<-list.files(path = "/xdisk/mpadi/jiawenyang/result/centrosom
 
 combined_bin_sv_counts<-read.csv(files_bin_sv_counts[1])[,1:3]
 for (file in files_bin_sv_counts){
-  #file =  "/xdisk/mpadi/jiawenyang/result/centrosome_loss/circos/CN2_2b_CKDN200005067-1A_H5T7VDSXY_L1_bin_counts.csv"  
   file_id<-gsub("10Mbp_bin_counts.csv", "", strsplit(file, "/")[[1]][9])
   df<-as.data.frame(read.csv(file)[,4])
   colnames(df)<-file_id
@@ -320,7 +316,7 @@ chr_annotation<-HeatmapAnnotation(
 )
 
 col_fun = colorRamp2(c(-5, 0, 50), c("blue", "grey95", "red"))
-#pdf(file = "/xdisk/mpadi/jiawenyang/result/centrosome_loss/circos/sv_per_bin_heatmap.pdf", height = 6, width = 9)
+
 Heatmap(mat,
         name = "SV count per \n 10Mb genome",
         #column_order = order(colnames(as.matrix(mat))),
@@ -340,7 +336,6 @@ Heatmap(mat,
         row_names_gp = gpar(fontsize = 4, fontface = "bold"),
         #heatmap_legend_param = list(at = c(-20, 0, 20)),
         top_annotation = chr_annotation)
-#dev.off()
 ```
 
 ### Finding hypermutation(sv) regions in transient centrosome-loss samples.
@@ -355,7 +350,6 @@ files_bin_sv_counts<-list.files(path = "/xdisk/mpadi/jiawenyang/result/centrosom
 
 combined_bin_sv_counts<-read.csv(files_bin_sv_counts[1])[,1:3]
 for (file in files_bin_sv_counts){
-  #file =  "/xdisk/mpadi/jiawenyang/result/centrosome_loss/circos/CN2_2b_CKDN200005067-1A_H5T7VDSXY_L1_bin_counts.csv"  
   file_id<-gsub("10Mbp_bin_counts.csv", "", strsplit(file, "/")[[1]][9])
   df<-as.data.frame(read.csv(file)[,4])
   colnames(df)<-file_id
@@ -371,7 +365,6 @@ colnames(centromere_region)<-c("chromosome", "start", "end")
 
 sv_count_matrix<-combined_bin_sv_counts[,4:ncol(combined_bin_sv_counts)]
 sv_count_matrix<-sv_count_matrix[,c(7,8,9)]
-#sv_count_matrix<-sv_count_matrix[,c(1, 3, 4, 7:ncol(sv_count_matrix))]
 hypermutation<-apply(sv_count_matrix, 1, sum)
 hypermutation<-hypermutation[order(hypermutation, decreasing = T)]
 hypermutation_region<-data.frame(chromosome = unlist(lapply(names(hypermutation), function(x) strsplit(x, "_")[[1]][1])),
@@ -384,11 +377,9 @@ overlaps<-findOverlaps(hypermutation_regions_gr, centromere_regions_gr)
 
 hypermutation_not_in_centromere_regions<-as.data.frame(hypermutation_regions_gr[-queryHits(overlaps)])
 hypermutation_not_in_centromere_regions<-hypermutation_not_in_centromere_regions[!duplicated(hypermutation_not_in_centromere_regions),]
-#write.csv(hypermutation_not_in_centromere_regions, file = "/xdisk/mpadi/jiawenyang/result/centrosome_loss/circos/hypermutation_not_in_centromere_regions.csv")
+
 hypermutation_in_centromere_regions<-as.data.frame(hypermutation_regions_gr[queryHits(overlaps)])
 hypermutation_in_centromere_regions<-hypermutation_in_centromere_regions[!duplicated(hypermutation_in_centromere_regions),]
-#write.csv(hypermutation_in_centromere_regions, file = "/xdisk/mpadi/jiawenyang/result/centrosome_loss/circos/hypermutation_in_centromere_regions.csv")
-
 
 n = 15 #Top15 hyermutation regions
 hypermutation_sites<-hypermutation_not_in_centromere_regions[1:n,c(1:3)]
@@ -423,24 +414,17 @@ find_sv_in_hypermutation_region <- function(sv_tab) {
 }
 
 cn9<-as.data.frame(find_sv_in_hypermutation_region(sv_others_all$`CN_9_1_CKDN200002996-1A_H57L2DSXY_L1`))
-#cn6<-as.data.frame(find_sv_in_hypermutation_region(sv_others_all$`CN_6_1_CKDN200002994-1A_H57L2DSXY_L1`))
-#cn1<-as.data.frame(find_sv_in_hypermutation_region(sv_others_all$`CN_1_1_CKDN200002992-1A_H57L2DSXY_L1`))
 cn9r2_2<-as.data.frame(find_sv_in_hypermutation_region(sv_others_all$`CN2_2b_CKDN200005067-1A_H5T7VDSXY_L1`))
 
 #make bar plot for hypermutation region for cn9 and cn9r2_2
 library(dplyr)
 cn9_count<-as.data.frame(cn9 %>% group_by(site) %>% dplyr::count(TYPE))
 cn9_count[,"sample"]<-rep("CN_9", nrow(cn9_count))
-#cn6_count<-as.data.frame(cn6 %>% group_by(site) %>% dplyr::count(TYPE))
-#cn6_count[,"sample"]<-rep("CN_6", nrow(cn6_count))
-#cn1_count<-as.data.frame(cn1 %>% group_by(site) %>% dplyr::count(TYPE))
-#cn1_count[,"sample"]<-rep("CN_1", nrow(cn1_count))
 
 cn9r2_2_count<-as.data.frame(cn9r2_2 %>% group_by(site) %>% dplyr::count(TYPE))
 cn9r2_2_count[,"sample"]<-rep("CN9R2_2", nrow(cn9r2_2_count))
 
 count_all<-rbind(cn9_count, cn9r2_2_count)
-#count_all<-rbind(cn1_count, cn6_count, cn9_count)
 colnames(count_all)<-c("site", "svtype", "count", "sample")
 
 library(ggplot2)
@@ -471,10 +455,7 @@ p <- ggplot(data=count_all,
           legend.position = "top",
           panel.spacing = unit(0,'lines')) +
     coord_flip()
-
-#pdf(file ="/xdisk/mpadi/jiawenyang/result/centrosome_loss/circos/sv_per_bin_hotspot_non_centromeric_region.pdf")
 p
-#dev.off()
 ```
 
 ```{r centromeric reigion, eval = F, include = F, echo = F}
@@ -557,10 +538,7 @@ p <- ggplot(data=count_all,
           legend.position = "top",
           panel.spacing = unit(0,'lines')) +
     coord_flip()
-
-#pdf(file ="/xdisk/mpadi/jiawenyang/result/centrosome_loss/circos/sv_per_bin_hotspot_in_centromeric_region.pdf")
 p
-#dev.off()
 ```
 
 
@@ -592,12 +570,16 @@ p <- ggplot(data=count_all,
           legend.position = "top",
           panel.spacing = unit(0,'lines')) +
     coord_flip()
-
-#pdf(file ="/xdisk/mpadi/jiawenyang/result/centrosome_loss/circos/sv_per_bin_hotspot.pdf")
 p
 ```
 
+<a href="#top1" class="back-to-top">Back to top</a>
+
 # Characterizing CNV profiles of transient centrosome-loss samples
+
+<div id="top2"></div>
+
+**_[back to home](/centrosome_loss_and_PCa/index.html)_**
 
 ## Visualizing CNV data from CNVkit
 ```{sh Visualize CNV result from CNVkit output, eval = F, include = T, echo = T}
@@ -632,7 +614,6 @@ sample_id<-unlist(lapply(files, function(x) strsplit(x, "/")[[1]][8]))
 sample_id<-unlist(lapply(sample_id, function(x) strsplit(x, "[.]")[[1]][1]))
 
 colnames(cnv_df)<-c("chromosome", "start", "end", sample_id)
-#saveRDS(cnv_df, file = "/xdisk/mpadi/jiawenyang/result/centrosome_loss/cnvkit_wgs/cnv_bins_for_heatmap.rds")
 ```
 
 ### Calculating sample distance and performing hierarchiecal clustering
@@ -652,9 +633,7 @@ Hierar_cl <- hclust(distance_mat, method = "average")
 Hierar_cl
 
 # Plotting dendrogram
-#pdf(file = "/xdisk/mpadi/jiawenyang/result/centrosome_loss/cnvkit_wgs/Unsupervised_Hierarchical_clustering_on_samples.pdf")
 plot(Hierar_cl)
-#dev.off()
 ```
 
 ## Summarizing consistent CNV regions from xenograft tumor tissue 
@@ -720,11 +699,9 @@ colnames(cnv_loss_cytobands) <- c("seqnames", "start", "end", "cytobands")
 
 #Show consistently gain regions
 DT::datatable(cnv_gain_cytobands)
-#write.csv(cnv_gain_cytobands, file = "/xdisk/mpadi/jiawenyang/result/centrosome_loss/cnvkit_wgs/xenograft_tumor_consistent_gain_regions.csv")
 
 #Show consistently loss regions
 DT::datatable(cnv_loss_cytobands)
-#write.csv(cnv_loss_cytobands, file = "/xdisk/mpadi/jiawenyang/result/centrosome_loss/cnvkit_wgs/xenograft_tumor_consistent_loss_regions.csv")
 ```
 
 
@@ -739,24 +716,21 @@ library(RCircos)
 seqlengths(olps_gain)<-seqlengths(ideoCyto$hg19)[names(seqlengths(olps_gain))]
 seqlengths(olps_loss)<-seqlengths(ideoCyto$hg19)[names(seqlengths(olps_loss))]
 
-#pdf(file = "/xdisk/mpadi/jiawenyang/result/centrosome_loss/cnvkit_wgs/cnv_gain_regions.pdf")
 p_gain= autoplot(cyto.info[seqnames(cyto.info) %in% seqnames(olps_gain)], layout = "karyogram", cytobands = T )  + 
     layout_karyogram(data = olps_gain, aes(color = cnv_state, fill = cnv_state), size = 0.5, geom = "rect") +
     labs(colour = "cnv_state") +
     scale_color_manual(labels = c("gain"), values = c("orange")) +
     scale_fill_manual(labels = c("gneg", "gpos100", "gpos25", "gpos50", "gpos75", "gvar", "stalk", "acen", "cnv_state"), values = c(c("#f9f9f9", "#474747", "#cecece", "#a0a0a0", "#737373", "#474747", "#d36c6c", "#8b2323"), alpha(c("#cc0000"), 0.6)))
   print(p_gain)
-#dev.off()
 
-#pdf(file = "/xdisk/mpadi/jiawenyang/result/centrosome_loss/cnvkit_wgs/cnv_loss_regions.pdf")  
 p_loss= autoplot(cyto.info[seqnames(cyto.info) %in% seqnames(olps_loss)], layout = "karyogram", cytobands = T )  + 
     layout_karyogram(data = olps_loss, aes(color = cnv_state, fill = cnv_state), size = 0.5, geom = "rect") +
     labs(colour = "cnv_state") +
     scale_color_manual(labels = c("loss"), values = c("purple")) +
     scale_fill_manual(labels = c("gneg", "gpos100", "gpos25", "gpos50", "gpos75", "gvar", "stalk", "acen", "cnv_state"), values = c(c("#f9f9f9", "#474747", "#cecece", "#a0a0a0", "#737373", "#474747", "#d36c6c", "#8b2323"), alpha(c("#3399ff"), 0.5)))
   print(p_loss)
-#dev.off()
 ```
 
+<a href="#top2" class="back-to-top">Back to top</a>
 
-
+**_[back to home](/centrosome_loss_and_PCa/index.html)_**

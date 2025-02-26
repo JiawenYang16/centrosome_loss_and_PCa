@@ -1,0 +1,1065 @@
+---
+title: "Transient centrosome loss CN-signature-associated genes predict poor outcomes in independent PCa cohorts at transcriptomic level"
+date: "`r Sys.Date()`"
+output:  rmdformats::material
+---
+<style type="text/css">
+
+body{ /* Normal  */
+      font-size: 12px;
+  }
+td {  /* Table  */
+  font-size: 12px;
+}
+h1.title {
+  font-size: 25px;
+  color: White;
+  font-family:"Arial";
+}
+h1 { /* Header 1 */
+  font-size: 24px;
+  color: DarkBlue;
+  font-family:"Arial";
+}
+h2 { /* Header 2 */
+    font-size: 22px;
+  color: DarkBlue;
+  font-family:"Arial";
+}
+h3 { /* Header 3 */
+  font-size: 20px;
+  font-family: "Times New Roman", Times, serif;
+  color: DarkBlue;
+}
+code.r{ /* Code block */
+    font-size: 12px;
+}
+pre { /* Code block - determines code spacing between lines */
+    font-size: 12px;
+}
+</style>
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = F, message = F, eval = F, include = T)
+```
+
+```{r clean environment, echo = F, include = F, eval = T}
+rm(list = ls())
+gc()
+```
+
+```{r load library, echo = T, eval = T, include = T, warning=FALSE, message=FALSE}
+library(glmnet)
+library(dplyr)
+library(tidyverse)
+library(edgeR)
+library(limma)
+library(AnnotationHub)
+library(ensembldb)
+library(biomaRt)
+library(dbplyr) #must load this package to make sure AnnotationHub can grep the database
+library(DT)
+library(survival)
+library(ggpubr)
+library(survminer)
+library(rstatix)
+library(ezcox)
+```
+
+# Establishing Lasso Cross-validation model to get CIN signature genes from TCGA PRAD transcriptomic data
+
+<div id="top1"></div>
+
+**_[back to home](/centrosome_loss_and_PCa/index.html)_**
+
+
+### Importing CN-signature 3 TCGA PRAD samples info
+```{r load CN-signature classification result, eval = T}
+sig3_patient<-readRDS(file = "/xdisk/mpadi/jiawenyang/result/centrosome_loss/sigminer/clinical_association_table/sequenza_tcga_cn_sig3_tcga_samples.rds")
+```
+
+
+### Processing TCGA PRAD data downloaded from GDC data portal
+```{r load and process TCGA PRAD data, include = T, echo = T, eval = F}
+TCGA_meta_data<-read_tsv(file = "/xdisk/mpadi/jiawenyang/data/centrosome_loss/TCGA/gdc_sample_sheet.2024-02-06.tsv", col_names = T)
+TCGA_rna_read_counts_files<-list.files(path = "/xdisk/mpadi/jiawenyang/data/centrosome_loss/TCGA/read_count",
+                                       pattern = "*counts.tsv",
+                                       recursive = T,
+                                       full.names = T)
+meta_data<-as.data.frame(TCGA_meta_data)[, c("File Name", "Sample ID", "Case ID", "Sample Type")]
+tumor_meta_data<-meta_data[meta_data$`Sample Type` !="Solid Tissue Normal", ]
+
+read_count<-as.data.frame(read.table(TCGA_rna_read_counts_files[1], sep = "\t", header = T))
+read_count<-read_count[5:nrow(read_count), c("gene_id", "gene_name", "unstranded")]
+colnames(read_count)<-c("gene_id", "gene_name", basename(TCGA_rna_read_counts_files[1]))
+
+for (i in 2:length(TCGA_rna_read_counts_files)){
+  file_name<-basename(TCGA_rna_read_counts_files[i])
+  df<-read.table(TCGA_rna_read_counts_files[i], sep = "\t", header = T)
+  df<-df[5:nrow(df), c("gene_id", "gene_name", "unstranded")]
+  colnames(df)<-c("gene_id", "gene_name", file_name)
+  read_count<-left_join(read_count, df, by = c("gene_id", "gene_name"))
+}
+
+read_count<-readRDS("/xdisk/mpadi/jiawenyang/data/centrosome_loss/TCGA/read_count_unstranded_TCGA.rds")
+samples<-colnames(read_count)[3:length(colnames(read_count))]
+tumor_samples<-samples[samples %in% tumor_meta_data$`File Name`]
+tumor_matrix<-read_count[, c("gene_id","gene_name",tumor_meta_data$`File Name`)]
+colnames(tumor_matrix)<-c("gene_id", "gene_name", tumor_meta_data$`Sample ID`)
+dim(tumor_matrix)
+
+# Normalize gene expression matrix.
+group<-factor(colnames(tumor_matrix)[3:length(colnames(tumor_matrix))])
+counts<-tumor_matrix[,3:ncol(tumor_matrix)]
+rownames(counts)<-tumor_matrix$gene_id
+  
+y <-DGEList(counts = counts, group = group)
+keep <- rowSums(cpm(y) > 1) >= length(group)/2
+y <- y[keep, keep.lib.sizes = FALSE]
+y <- calcNormFactors(y, method = "TMM")
+design <- model.matrix(~0 + group)
+colnames(design)<-gsub("group", "", colnames(design))
+temp <- voom(y, design, plot = T)
+edat <- temp$E
+edat <- as.data.frame(edat)
+```
+
+### Establishing model
+
+```{r clean the data for ML, include=T, echo = T, eval = T, message=FALSE, warning  = F}
+sig3_patient<-substr(sig3_patient, 1, nchar(sig3_patient)-3)
+edat<-readRDS(file = "/xdisk/mpadi/jiawenyang/data/centrosome_loss/TCGA/tcga_prad_tumor_edat.rds")
+colnames(edat)<-unlist(lapply(colnames(edat), function(x) substr(x, 1, 12)))
+```
+    
+```{r apply lasso Cross-validation method to identify signature genes, eval = T, include = T, echo = T}
+library(glmnet)
+labels<-ifelse(colnames(edat) %in% sig3_patient, 1, 0)
+
+#prepare data
+x = as.matrix(t(edat))
+y = labels
+
+#perform lasso regression with cross-validation
+set.seed(1234)
+lasso_model<-cv.glmnet(x, y, alpha = 1, nfolds = 10) #ALPHA = 1 for lasso
+
+#Extract selected features (genes) based on the optimal lambda
+selected_genes<-coef(lasso_model, s = "lambda.min")
+
+non_zero_genes <- rownames(selected_genes)[which(selected_genes != 0)]
+
+ensembl<-useEnsembl(biomart = "genes", dataset = "hsapiens_gene_ensembl")
+ensemblId<-non_zero_genes[-1] #exclude intercept
+ensemblId<-unlist(lapply(ensemblId, function(x) strsplit(x, "[.]")[[1]][1]))
+
+library(dbplyr)
+signature_gene_annotation<-biomaRt::getBM(filters= "ensembl_gene_id", attributes= c("ensembl_gene_id","hgnc_symbol","chromosome_name","band","description","start_position","end_position", "entrezgene_id"),
+                        values=ensemblId, mart=ensembl)
+signature_gene_annotation<-signature_gene_annotation[signature_gene_annotation$hgnc_symbol != "",]
+DT::datatable(signature_gene_annotation)
+```
+
+### Importing CIN signature genes and curating gene names to follow gene symbol
+
+```{r import CIN signature genes and test for result, eval = T, echo = T, include = T}
+CIN_genes<-readxl::read_excel("/xdisk/mpadi/jiawenyang/result/centrosome_loss/lasso_signature_genes/CIN_signature_genes.xlsx")
+#CIN70
+CIN70<-CIN_genes$CIN70 #Orginal list from published paper: https://www.nature.com/articles/ng1861. Need to adjust gene names to their formal human gene symbol.
+CIN70[61]<-"GPI" 
+CIN70[4]<-"CDCA2" #Cell division cycle-associated protein, was CDC2 in the list.
+CIN70[13]<-"CEP250" #Centrosome Nek2-associated protein 1, was CNAP1
+CIN70[18]<-"CDC45" #Cell division cycle 45 -like was CDC45L
+CIN70[46]<-"NCAPH" #Non-SMC condensin I complex subunit H. was BRRN1
+CIN70[49]<-"NCAPG2" #Non-SMC condensin II complex subunit G2. was MTB 
+CIN70[52]<-"PBK" #PDZ binding kinase gene was TOPK
+CIN70[62]<-"SRSF2" #Serine And arginine rich splicing factor 2.was SFRS2
+CIN70[67]<-"AURKA" #Aurora kinase A.was STK6
+CIN70[69]<-"TMEM194A" #Nuclear envelope integral membrane protein 1.was KIAA0286
+
+#CIN25
+CIN25<-na.omit(CIN_genes$CIN25)#Orginal list from published paper: https://www.nature.com/articles/ng1861.
+CIN25[3]<-"CDC45" #Cell division cycle 45 -like was CDC45L
+CIN25[6]<-"CDK1" #Cyclin dependent kinease 1, was CDC2.
+CIN25[14]<-"CEP250" #Centrosome Nek2-associated protein 1, was CNAP1
+
+#CA20
+CA20<-na.omit(CIN_genes$CA20) #gene names are all formal gene symbol.
+
+#CIN23
+CIN23<-na.omit(CIN_genes$CIN23) #gene names are all formal gene symbol.#GTF2IP7 and CD24 are not included in the dataset
+
+#CIN7
+CIN7<-na.omit(CIN_genes$CIN7) #gene names are all formal gene symbol.
+
+#CN-sig3
+CN_sig3<-na.omit(CIN_genes$`CN-sig3 genes_with_All_TCGA_prad_genes`) #gene names are all formal gene symbol.
+```
+
+<a href="#top1" class="back-to-top">Back to top</a>
+
+# Performing clinical outcomes association analysese in independent PCa cohorts with samples classified using CIN gene sets
+
+<div id="top2"></div>
+
+**_[back to home](/centrosome_loss_and_PCa/index.html)_**
+
+## Performing analyses in DKFZ 2018 Cancer Cell dataset
+
+### Performing kaplan-meier survival analysis in DKFZ 2018 Cancer Cell data 
+
+```{r signature genes validation in dkfz early onset dataset, eval = T, include = T, echo = T, fig.width = 10, fig.height = 8}
+dkfz_df<-read.table("/xdisk/mpadi/jiawenyang/data/centrosome_loss/DKFZ_2018/data_mrna_seq_rpkm_zscores_ref_all_samples.txt",sep = "\t", header = T)
+zdat<-dkfz_df[,c(1,3:ncol(dkfz_df))]
+sample_metadata<-read.table("/xdisk/mpadi/jiawenyang/data/centrosome_loss/DKFZ_2018/data_clinical_sample.txt", sep = "\t", header = T)
+patient_metadata<-read.table("/xdisk/mpadi/jiawenyang/data/centrosome_loss/DKFZ_2018/data_clinical_patient.txt", sep = "\t", header = T)
+
+
+CIN.gene.set<-c("CIN70", "CIN25", "CIN23", "CIN7", "CA20", "CN_sig3")
+DKFZ_CIN_zscore_matrix<-list()
+DKFZ_CIN_clincal_matrix<-list()
+for (i in 1:length(CIN.gene.set)){
+  CIN.name<-CIN.gene.set[i]
+  cn_signature_genes <- get(CIN.gene.set[i])
+  subzdat<-zdat[zdat$Hugo_Symbol %in% cn_signature_genes,]
+  clinical_metadata<-left_join(sample_metadata, patient_metadata, by = "PATIENT_ID")
+  duplicated_samples<-clinical_metadata[duplicated(clinical_metadata$PATIENT_ID), "SAMPLE_ID"]
+  subzdat<-subzdat[, !colnames(subzdat) %in% intersect(duplicated_samples, colnames(subzdat))]
+  altered_group<-c()
+  for (k in 1:nrow(subzdat)){
+    sample_id<-colnames(subzdat[,2:ncol(subzdat)])[which(abs(subzdat[k, 2:ncol(subzdat)]) >= 2)] #absolute z-score greater than 2 is defined as altered.
+    altered_group<-c(altered_group, sample_id)
+  }
+  altered_group<-unique(altered_group)
+  unaltered_group<-unique(colnames(subzdat)[-1][!colnames(subzdat)[-1] %in% altered_group])
+  subzdat_ordered<-subzdat[, c(altered_group, unaltered_group)]
+  rownames(subzdat_ordered)<-subzdat$Hugo_Symbol
+  DKFZ_CIN_zscore_matrix[[CIN.name]]<-subzdat_ordered
+
+  mrnaseq_clinical_metadata<-clinical_metadata[clinical_metadata$SAMPLE_ID %in% colnames(subzdat)[2:ncol(subzdat)],]
+  alt_sample_metadata<-mrnaseq_clinical_metadata[mrnaseq_clinical_metadata$SAMPLE_ID %in% unique(altered_group), ]
+  unalt_sample_metadata<-mrnaseq_clinical_metadata[!mrnaseq_clinical_metadata$SAMPLE_ID %in% unique(altered_group),]
+  alt_sample_metadata[, "group"]<-rep("altered", nrow(alt_sample_metadata))
+  unalt_sample_metadata[,"group"]<-rep("unaltered", nrow(unalt_sample_metadata))
+  clinical_data<-rbind(alt_sample_metadata, unalt_sample_metadata)
+  DKFZ_CIN_clincal_matrix[[CIN.name]]<-clinical_data
+  clinical_data_KM<-clinical_data
+  BCR_curve<-Surv(clinical_data_KM$TIME_FROM_SURGERY_TO_BCR_LASTFU, clinical_data_KM$BCR_STATUS)
+  BCR_Sfit<-survfit(Surv(TIME_FROM_SURGERY_TO_BCR_LASTFU, BCR_STATUS)~group, data = clinical_data_KM)
+
+  dkfz_prad_relapse<-ggsurvplot(BCR_Sfit, 
+                              conf.int = F, 
+                              pval = T, 
+                              risk.table = T, 
+                              legend.labs = c("altered", "unaltered"),
+                              legend.title = "CIN signature genes",
+                              xlab = "Time (month)",
+                              title = paste0("DKFZ Prostate cancer patients BCR-free survival \n ", CIN.name, " alteration"),
+                              palette = c("orange", "#5BC0EB"),
+                              font.tickslab = c(15),
+                              risk.table.height = .25)
+  print(dkfz_prad_relapse)
+}
+```
+
+### Performing association analyses in DKFZ 2018 Cancer Cell data with CN-signature 3 associated genes
+
+```{r association analysis - ETS, GLEASON Score in DKFZ 2018, eval = F, include = F, echo = F}
+#ETS fusion 
+clinical_data_ETS<-clinical_data %>% group_by(group) %>% dplyr::count(ETS_STATUS)
+ETS_df<-data.frame("altered" = c(16, 7), "unaltered" = c(53, 18), row.names = c("ETS_fusion", "non-fusion"))
+fisher.test(ETS_df)
+
+#GLEASON score
+clinical_data_gleason<-clinical_data %>% group_by(group) %>% dplyr::count(GLEASON_SCORE)
+GLEASON_df<-data.frame("altered" = c(1, 8, 5, 0, 4, 5, 0), "unaltered" = c(12, 48, 6, 1, 2, 1, 1),
+                       row.names = c("3+3", "3+4", "4+3", "4+4", "4+5", "5+4", "5+5"))
+fisher.test(GLEASON_df)
+
+#age at dignostic
+age.stat.test <- clinical_data %>%
+  t_test(AGE ~ group) %>%
+  add_significance()
+age.stat.test
+#sample purity
+purity.stat.test <- clinical_data %>%
+  t_test(MEDIAN_PURITY ~ group) %>%
+  add_significance()
+purity.stat.test
+#psa level
+psa.stat.test <- clinical_data %>% 
+  t_test(PREOPERATIVE_PSA ~ group) %>%
+  add_significance()
+psa.stat.test
+#TMB level
+tmb.stat.test <- clinical_data %>%
+  t_test(TMB_NONSYNONYMOUS ~ group) %>%
+  add_significance()
+tmb.stat.test
+```
+
+```{r visualize the association analysis results in DKFZ 2018 - gleason score, eval = T, include = T, echo = T, fig.width = 10, fig.height = 8}
+#GLEASON score
+library(RColorBrewer)
+
+col_values = rev(brewer.pal(n = 7, name = "RdBu"))
+col_values[4] <- "#e7e689"
+
+clinical_data_gleason<-clinical_data %>% group_by(group) %>% dplyr::count(GLEASON_SCORE)
+GLEASON_df<-data.frame("altered" = c(1, 8, 5, 0, 4, 5, 0), "unaltered" = c(12, 48, 6, 1, 2, 1, 1),
+                       row.names = c("3+3", "3+4", "4+3", "4+4", "4+5", "5+4", "5+5"))
+
+p_gleason <- ggplot(data=clinical_data_gleason, 
+            aes(x=factor(group, levels = c("altered", "unaltered")), 
+                y=n, 
+                fill=GLEASON_SCORE)) +
+    scale_fill_manual(labels = c("3+3", "3+4", "4+3", "4+4", "4+5", "5+4", "5+5"), values=col_values) +
+    geom_bar(position = "fill", stat="identity", width = 0.6) +
+    geom_text(aes(label = n), size = 3, hjust = 0.5, vjust = 3, position = "fill") +
+    xlab("sample groups") +                 
+    ylab("Percentage of each sample type") +   
+    ggtitle("Associate CIN signatures genes expression with patients PCa grades") +
+    theme_bw () +
+    theme(title = element_text(face = "bold"),
+          legend.title = element_text(face = "bold"),
+          legend.text = element_text(face = "bold"),
+          axis.text.x = element_text(face = "bold"),
+          axis.text.y = element_text(face = "bold"),
+          axis.title.x = element_text(face = "bold"),
+          strip.text.x = element_blank(),
+          strip.text.y = element_text(angle = 0, face = "bold", hjust = 0),
+          legend.position = "right",
+          panel.spacing = unit(0,'lines'))
+
+p_gleason
+
+#GLEASON score
+clinical_data_gleason<-clinical_data %>% group_by(group) %>% dplyr::count(GLEASON_SCORE)
+GLEASON_df<-data.frame("altered" = c(1, 8, 5, 0, 4, 5, 0), "unaltered" = c(12, 48, 6, 1, 2, 1, 1),
+                       row.names = c("3+3", "3+4", "4+3", "4+4", "4+5", "5+4", "5+5"))
+print(fisher.test(GLEASON_df))
+```
+```{r visualize the association analysis results -age, eval = F, include = F, echo = F}
+p_age<-ggplot(data = clinical_data,
+              aes(x = factor( group, levels = c("altered", "unaltered")),
+                  y = AGE,
+                  fill = group,
+                  color = group)) +
+        theme_light() +
+        geom_boxplot(alpha = 0.4) +
+        geom_jitter(shape = 16, position = position_jitter(0.2)) +
+        scale_fill_manual(values = c("altered" = "orange", "unaltered" = "#5BC0EB")) +
+        scale_color_manual(values = c("altered" = "orange", "unaltered" = "#5BC0EB")) +
+        stat_compare_means(label.y =55, label.x = 2, method = "t.test")+
+        labs(title="Associate CIN signatures genes expression with PCa dianostic age", x="patient groups", y = "Age")+
+        theme(plot.title = element_text(size=20,  face = "bold"), 
+        axis.text.x = element_text(size = 10,  face = "bold"), axis.text.y = element_text(size = 10,  face = "bold"), 
+        axis.title.x = element_text(size = 15,  face = "bold"), axis.title.y = element_text(size = 15,  face = "bold"),
+        legend.text = element_text(size = 10,  face = "bold"), legend.title = element_text(size = 15,  face = "bold"))
+
+p_age
+```
+
+```{r visualize the association analysis results -sample purity in DKFZ 2018, include = T, echo = T, eval = T, fig.width = 10, fig.height = 8}
+p_purity<-ggplot(data = clinical_data,
+              aes(x = factor( group, levels = c("altered", "unaltered")),
+                  y = MEDIAN_PURITY,
+                  fill = group,
+                  color = group)) +
+        theme_light() +
+        geom_boxplot(alpha = 0.4) +
+        geom_jitter(shape = 16, position = position_jitter(0.2)) +
+        scale_fill_manual(values = c("altered" = "orange", "unaltered" = "#5BC0EB")) +
+        scale_color_manual(values = c("altered" = "orange", "unaltered" = "#5BC0EB")) +
+        stat_compare_means(label.y =70, label.x = 2, method = "t.test")+
+        labs(title="Associate CIN signatures genes expression with PCa sample purity", x="patient groups", y = "sample purity")+
+        theme(plot.title = element_text(size=20,  face = "bold"), 
+        axis.text.x = element_text(size = 10,  face = "bold"), axis.text.y = element_text(size = 10, face = "bold"), 
+        axis.title.x = element_text(size = 15, face = "bold"), axis.title.y = element_text(size = 15,  face = "bold"),
+        legend.text = element_text(size = 10, face = "bold"), legend.title = element_text(size = 15,  face = "bold"))
+
+p_purity
+```
+
+```{r visualize the association analysis results - tumor mutational burden, include = F, echo = F, eval = F}
+p_TMB<-ggplot(data = clinical_data,
+              aes(x = factor( group, levels = c("altered", "unaltered")),
+                  y = TMB_NONSYNONYMOUS,
+                  fill = group,
+                  color = group)) +
+        theme_light() +
+        geom_boxplot(alpha = 0.4) +
+        geom_jitter(shape = 16, position = position_jitter(0.2)) +
+        scale_fill_manual(values = c("altered" = "orange", "unaltered" = "#5BC0EB")) +
+        scale_color_manual(values = c("altered" = "orange", "unaltered" = "#5BC0EB")) +
+        stat_compare_means(label.y = 2.5, label.x = 2, method = "t.test")+ 
+        labs(title="Associate CIN signatures genes expression with PCa sample mutational burden", x="patient groups", y = "Tumor Mutational Burden (TMB)")+
+        theme(plot.title = element_text(size=20,  face = "bold"), 
+        axis.text.x = element_text(size = 10,  face = "bold"), axis.text.y = element_text(size = 10, face = "bold"), 
+        axis.title.x = element_text(size = 15, face = "bold"), axis.title.y = element_text(size = 15,  face = "bold"),
+        legend.text = element_text(size = 10, face = "bold"), legend.title = element_text(size = 15,  face = "bold"))
+
+p_TMB
+```
+
+## Performing analyses in MSKCC 2010 Cancer Cell dataset
+
+### Performing kaplan-meier survival analysis in MSKCC 2010 Cancer Cell data 
+
+```{r import and process MSKCC 2010 dataset, include = T, echo = T}
+prad_mskcc<-read.table(file = "/xdisk/mpadi/jiawenyang/data/centrosome_loss/prad_mskcc/data_mrna_agilent_microarray_zscores_ref_diploid_samples.txt", sep = "\t", header = T)
+
+Entrez_id<-prad_mskcc$Entrez_Gene_Id
+genes_annotation<-biomaRt::getBM(filters= "entrezgene_id", attributes= c("ensembl_gene_id","hgnc_symbol","chromosome_name","band","description","start_position","end_position", "entrezgene_id"),
+                        values=Entrez_id, mart=ensembl)
+
+zdat<-left_join(prad_mskcc, genes_annotation, by = c("Entrez_Gene_Id" = "entrezgene_id"))
+```
+
+```{r Disease-free-survival, include = T, echo = T, eval = T}
+zdat<-readRDS("/xdisk/mpadi/jiawenyang/result/centrosome_loss/lasso_signature_genes/prad_mskcc_zdat.rds")
+sample_metadata<-read.table("/xdisk/mpadi/jiawenyang/data/centrosome_loss/prad_mskcc/data_clinical_sample.txt", sep = "\t", header = T)
+patient_metadata<-read.table("/xdisk/mpadi/jiawenyang/data/centrosome_loss/prad_mskcc/data_clinical_patient.txt", sep = "\t", header = T)
+clinical_metadata<-left_join(sample_metadata, patient_metadata, by = "PATIENT_ID")
+
+MSKCC_CIN_zscore_matrix<-list()
+MSKCC_CIN_clincal_matrix<-list()
+for(i in 1:length(CIN.gene.set)){
+  CIN.name<-CIN.gene.set[i]
+  cn_signature_genes <- get(CIN.gene.set[i])
+  subzdat<-zdat[zdat$hgnc_symbol %in% cn_signature_genes, c(153, 2:151)] #variables
+  subzdat<-subzdat[!duplicated(subzdat$hgnc_symbol),]
+  altered_group<-c()
+  for (k in 1:nrow(subzdat)){
+  sample_id<-colnames(subzdat[,2:ncol(subzdat)])[which(abs(subzdat[k, 2:ncol(subzdat)]) >= 3)] #absolute z-score greater than 3 is defined as altered.
+  altered_group<-c(altered_group, sample_id)
+  }
+  altered_group<-unique(altered_group)
+  unaltered_group<-unique(colnames(subzdat)[-1][!colnames(subzdat)[-1] %in% altered_group])
+  subzdat_ordered<-subzdat[, c(altered_group, unaltered_group)]
+  rownames(subzdat_ordered)<-subzdat$hgnc_symbol
+  MSKCC_CIN_zscore_matrix[[CIN.name]]<-subzdat_ordered
+
+  mrnaseq_clinical_metadata<-clinical_metadata[clinical_metadata$SAMPLE_ID %in% colnames(zdat)[2:nrow(zdat)],]
+  alt_sample_metadata<-mrnaseq_clinical_metadata[mrnaseq_clinical_metadata$SAMPLE_ID %in% unique(altered_group), ]
+  unalt_sample_metadata<-mrnaseq_clinical_metadata[!mrnaseq_clinical_metadata$SAMPLE_ID %in% unique(altered_group),]
+  alt_sample_metadata[, "group"]<-rep("altered", nrow(alt_sample_metadata))
+  unalt_sample_metadata[,"group"]<-rep("unaltered", nrow(unalt_sample_metadata))
+  clinical_data<-rbind(alt_sample_metadata, unalt_sample_metadata)
+  clinical_data$DFS_STATUS<-as.numeric(substr(clinical_data$DFS_STATUS, 1, 1))
+  MSKCC_CIN_clincal_matrix[[CIN.name]]<-clinical_data
+  
+  #kaplan meier analysis
+  clinical_data_KM<-clinical_data[!is.na(clinical_data$DFS_STATUS),]
+  DF_curve<-Surv(clinical_data_KM$DFS_MONTHS, clinical_data_KM$DFS_STATUS)
+  DF_Sfit<-survfit(Surv(DFS_MONTHS, DFS_STATUS)~group, data = clinical_data_KM)
+  
+  mskcc_prad_relapse<-ggsurvplot(DF_Sfit, 
+                              conf.int = F, 
+                              pval = T, 
+                              risk.table = T, 
+                              legend.labs = c("altered", "unaltered"),
+                              legend.title = "CIN signature genes",
+                              xlab = "Time (month)",
+                              title = paste0("MSKCC Prostate cancer patients Disease-free survival \n ", CIN.name, " alteration"),
+                              palette = c("orange", "#5BC0EB"),
+                              font.tickslab = c(15),
+                              risk.table.height = .25)
+  print(mskcc_prad_relapse)
+}
+```
+
+```{r MSKCC oncoplot format alteration info in DKFZ PRAD data, include = F, echo = F, eval = F}
+MSKCC_CIN_zscore_matrix
+MSKCC_CIN_clincal_matrix
+MSKCC_hm_zscore<-list()
+for(i in 1:length(MSKCC_CIN_zscore_matrix)){
+  cin.set<-names(MSKCC_CIN_zscore_matrix)[i]
+  cin.set.mat<-MSKCC_CIN_zscore_matrix[[i]]
+  cin.set.mat[abs(cin.set.mat) < 3] <-0
+  print(range(cin.set.mat))
+  MSKCC_hm_zscore[[cin.set]]<-cin.set.mat
+}
+
+generate_heatmap<-function(mat, set.name){
+  col_fun = colorRamp2(c(-10, 0, 10), c("blue", "grey95", "red"))
+  
+  alt_color<-c(altered = "orange", unaltered = "skyblue")
+  DFS_color<-c(`<NA>` = "grey", `0` = "#5B84B1FF", `1` = "#FC766AFF")
+  
+  clinical_annot<-MSKCC_CIN_clincal_matrix[[set.name]][,c("SAMPLE_ID", "group", "DFS_STATUS")]
+  clinical_annot$DFS_STATUS<-as.character(clinical_annot$DFS_STATUS)
+  
+  hm_col_annot <- HeatmapAnnotation(df=clinical_annot[,2:3],col=list(
+  group = alt_color, DFS_STATUS = DFS_color ))
+  
+  hm =  Heatmap(mat,
+        name="z-score",
+        col = col_fun,
+        row_names_gp = gpar(fontsize = 8),
+        row_names_max_width=unit(10, "cm"),
+        show_row_names=T,
+        show_column_names=T,
+        column_names_gp = gpar(fontsize = 5),
+        cluster_rows=F,
+        cluster_columns=F,
+        rect_gp = gpar(col = "grey40", lwd = 1),
+        column_title = paste0(set.name," in MSKCC 2010 PRAD data"),
+        top_annotation=hm_col_annot,
+        width = ncol(mat)*unit(2, "mm"), 
+        height = nrow(mat)*unit(5, "mm")
+  )
+  draw(hm, heatmap_legend_side = "left", annotation_legend_side = "left")
+}
+
+for (i in 1:length(MSKCC_hm_zscore)){
+  pdf(file = paste0("/xdisk/mpadi/jiawenyang/result/centrosome_loss/CINSig/MSKCC_Disease_free_survival/", names(MSKCC_hm_zscore)[i], "_alteration_heatmap.pdf"), width = 18, height = 5)
+  generate_heatmap(MSKCC_hm_zscore[[i]], names(MSKCC_hm_zscore)[i])
+  dev.off()
+}
+```
+
+```{r association analysis - ETS GLEASON Score and sample type MSKCC, include = F, echo = F, eval = F}
+#ETS fusion 
+clinical_data_ETS<-clinical_data %>% group_by(group) %>% dplyr::count(ERG_FUSION_GEX)
+ETS_df<-data.frame("altered" = c(24, 30), "unaltered" = c(50, 46), row.names = c("ETS_fusion", "non-fusion"))
+fisher.test(ETS_df)
+
+#GLEASON score
+clinica_data_gleason<-clinical_data
+clinica_data_gleason[, "GLEASON_SCORE_BOTH_SITES"]<-paste0(clinical_data$GLEASON_SCORE_1, "+", clinical_data$GLEASON_SCORE_2)
+clinical_data_gleason<-clinica_data_gleason %>% group_by(group) %>% dplyr::count(GLEASON_SCORE_BOTH_SITES)
+gsub("NA+NA", "NA", clinical_data_gleason$GLEASON_SCORE_BOTH_SITES)
+
+GLEASON_df<-data.frame("altered" = c(9, 15, 0, 7, 5, 8, 1, 9), "unaltered" = c(32, 38, 1, 16, 3, 3, 1, 2),
+                       row.names = c("3+3", "3+4", "3+5", "4+3", "4+4", "4+5", "5+3", "NA+NA"))
+fisher.test(GLEASON_df)
+
+#Sample type- metastasis or primary
+clinical_data_type<-clinical_data %>% group_by(group) %>% dplyr::count(SAMPLE_TYPE)
+type_df<-data.frame("altered" = c(17, 37), "unaltered" = c(2, 94), row.names = c("Metastasis", "Primary"))
+fisher.test(type_df)
+```
+
+### Performing association analyses in MSKCC 2010 Cancer Cell data with CN-signature 3 associated genes
+
+```{r visualize the association analysis results in MSKCC 2010 - gleason score, eval = T, echo = T, include = T, fig.width = 10, fig.height = 8}
+library(RColorBrewer)
+# Associate with Gleason Score
+clinica_data_gleason<-clinical_data
+clinica_data_gleason[, "GLEASON_SCORE_BOTH_SITES"]<-paste0(clinical_data$GLEASON_SCORE_1, "+", clinical_data$GLEASON_SCORE_2)
+clinical_data_gleason<-clinica_data_gleason %>% group_by(group) %>% dplyr::count(GLEASON_SCORE_BOTH_SITES)
+gsub("NA+NA", "NA", clinical_data_gleason$GLEASON_SCORE_BOTH_SITES)
+
+GLEASON_df<-data.frame("altered" = c(9, 15, 0, 7, 5, 8, 1, 9), "unaltered" = c(32, 38, 1, 16, 3, 3, 1, 2),
+                       row.names = c("3+3", "3+4", "3+5", "4+3", "4+4", "4+5", "5+3", "NA+NA"))
+fisher.test(GLEASON_df)
+
+col_values = rev(brewer.pal(n = 8, name = "RdBu"))
+col_values[8] <- alpha("grey", 0.6)
+
+p_gleason <- ggplot(data=clinical_data_gleason, 
+            aes(x=factor(group, levels = c("altered", "unaltered")), 
+                y=n, 
+                fill=GLEASON_SCORE_BOTH_SITES)) +
+    scale_fill_manual(labels = c("3+3", "3+4", "3+5", "4+3", "4+4", "4+5", "5+3", "NA+NA"), values=col_values) +
+    geom_bar(position = "fill", stat="identity", width = 0.6) +
+    geom_text(aes(label = n), size = 3, hjust = 0.5, vjust = 3, position = "fill") +
+    xlab("sample groups") +                 
+    ylab("Percentage of each sample type") +   
+    ggtitle("Associate CIN signatures genes expression with patients PCa grades") +
+    theme_bw () +
+    theme(title = element_text(face = "bold"),
+          legend.title = element_text(face = "bold"),
+          legend.text = element_text(face = "bold"),
+          axis.text.x = element_text(face = "bold"),
+          axis.text.y = element_text(face = "bold"),
+          axis.title.x = element_text(face = "bold"),
+          strip.text.x = element_blank(),
+          strip.text.y = element_text(angle = 0, face = "bold", hjust = 0),
+          legend.position = "right",
+          panel.spacing = unit(0,'lines'))
+
+p_gleason
+```
+
+```{r visualize the association analysis results -sample type MSKCC, eval = T, echo = T, include = T, fig.width = 10, fig.height = 8}
+library(RColorBrewer)
+# Associate with sample types- metastasis or primary
+clinical_data_type<-clinical_data %>% group_by(group) %>% dplyr::count(SAMPLE_TYPE)
+type_df<-data.frame("altered" = c(17, 37), "unaltered" = c(2, 94), row.names = c("Metastasis", "Primary"))
+print(fisher.test(type_df))
+
+col_values = rev(brewer.pal(n = 8, name = "RdBu"))
+col_values_type<-col_values[c(6, 3)]
+
+p_sample_type <- ggplot(data=clinical_data_type, 
+            aes(x=factor(group, levels = c("altered", "unaltered")), 
+                y=n, 
+                fill=SAMPLE_TYPE)) +
+    scale_fill_manual(labels = c("Metastasis", "Primary"), values=col_values_type) +
+    geom_bar(position = "fill", stat="identity", width = 0.6) +
+    geom_text(aes(label = n), size = 3, hjust = 0.5, vjust = 3, position = "fill") +
+    xlab("sample groups") +                 
+    ylab("Percentage of each sample type") +   
+    ggtitle("Associate CIN signatures genes expression with patients tumor type") +
+    theme_bw () +
+    theme(title = element_text(face = "bold"),
+          legend.title = element_text(face = "bold"),
+          legend.text = element_text(face = "bold"),
+          axis.text.x = element_text(face = "bold"),
+          axis.text.y = element_text(face = "bold"),
+          axis.title.x = element_text(face = "bold"),
+          strip.text.x = element_blank(),
+          strip.text.y = element_text(angle = 0, face = "bold", hjust = 0),
+          #strip.background =element_rect(fill="white"),
+          legend.position = "right",
+          panel.spacing = unit(0,'lines'))
+
+p_sample_type
+```
+## Performing analyses in SU2C/DREAM TEAM 2018 PNAS (mCRPC) dataset
+
+### Performing kaplan-meier survival analysis in SU2C/DREAM TEAM 2018 PNAS (mCRPC) dataset
+
+```{r validate signature genes in SU2C dataset, eval = T, echo = T, include = T, fig.width = 10, fig.height = 8}
+su2c_patient_data<-read.table("/xdisk/mpadi/jiawenyang/data/centrosome_loss/prad_su2c_2019/data_clinical_patient.txt", sep = "\t", header = T)
+su2c_sample_data<-read.table("/xdisk/mpadi/jiawenyang/data/centrosome_loss/prad_su2c_2019/data_clinical_sample.txt", sep = "\t", header = T)
+su2c_clinical_data<-dplyr::left_join(su2c_patient_data, su2c_sample_data, by = c("PATIENT_ID"))
+duplicated_samples<-su2c_clinical_data[duplicated(su2c_clinical_data$PATIENT_ID), "SAMPLE_ID"]
+
+su2c_zdat<-read.table(file = "/xdisk/mpadi/jiawenyang/data/centrosome_loss/prad_su2c_2019/data_mrna_seq_fpkm_capture_zscores_ref_all_samples.txt", sep = "\t", header = T)
+colnames(su2c_zdat)<-gsub("[.]", "-", colnames(su2c_zdat))
+su2c_zdat<-su2c_zdat[, !colnames(su2c_zdat) %in% duplicated_samples]
+
+SU2C_CIN_zscore_matrix<-list()
+SU2C_CIN_clincal_matrix<-list()
+for (i in 1:length(CIN.gene.set)){
+  CIN.name<-CIN.gene.set[i]
+  cn_signature_genes <- get(CIN.gene.set[i])
+  su2c_zdat_subset<-su2c_zdat[su2c_zdat$Hugo_Symbol %in% cn_signature_genes, c(1, which(colnames(su2c_zdat) %in% su2c_clinical_data[,"SAMPLE_ID"]))]
+  su2c_zdat_subset<-su2c_zdat_subset[!duplicated(su2c_zdat_subset$Hugo_Symbol),]
+  altered_group<-c()
+  for (k in 1:nrow(su2c_zdat_subset)){
+    sample_id<-colnames(su2c_zdat_subset[,2:ncol(su2c_zdat_subset)])[which(abs(su2c_zdat_subset[k, 2:ncol(su2c_zdat_subset)]) >= 2)]
+    altered_group<-c(altered_group, sample_id)
+  }
+  altered_group<-unique(altered_group)
+  unaltered_group<-unique(colnames(su2c_zdat_subset)[-1][!colnames(su2c_zdat_subset)[-1] %in% altered_group])
+  subzdat_ordered<-su2c_zdat_subset[, c(altered_group, unaltered_group)]
+  rownames(subzdat_ordered)<-su2c_zdat_subset$Hugo_Symbol
+  SU2C_CIN_zscore_matrix[[CIN.name]]<-subzdat_ordered
+  
+  mrnaseq_clinical_metadata<-su2c_clinical_data[su2c_clinical_data$SAMPLE_ID %in% colnames(su2c_zdat_subset)[2:ncol(su2c_zdat_subset)],]
+  alt_sample_metadata<-mrnaseq_clinical_metadata[mrnaseq_clinical_metadata$SAMPLE_ID %in% unique(altered_group), ]
+  unalt_sample_metadata<-mrnaseq_clinical_metadata[!mrnaseq_clinical_metadata$SAMPLE_ID %in% unique(altered_group),]
+  alt_sample_metadata[, "group"]<-rep("altered", nrow(alt_sample_metadata))
+  unalt_sample_metadata[,"group"]<-rep("unaltered", nrow(unalt_sample_metadata))
+  clinical_data<-rbind(alt_sample_metadata, unalt_sample_metadata)
+  clinical_data<-clinical_data[!duplicated(clinical_data$PATIENT_ID),]
+  clinical_data$OS_STATUS<-as.numeric(substr(clinical_data$OS_STATUS, 1, 1))
+  SU2C_CIN_clincal_matrix[[CIN.name]]<-clinical_data
+  
+  clinical_data_KM<-clinical_data
+
+  clinical_data_KM$OS_MONTHS <- as.numeric(clinical_data_KM$OS_MONTHS)
+  BCR_curve<-Surv(clinical_data_KM$OS_MONTHS, clinical_data_KM$OS_STATUS)
+  BCR_Sfit<-survfit(Surv(OS_MONTHS, OS_STATUS)~group, data = clinical_data_KM)
+
+  su2c_prad_relapse<-ggsurvplot(BCR_Sfit, 
+                                conf.int = F, 
+                                pval = T, 
+                                risk.table = T, 
+                                legend.labs = c("altered", "unaltered"),
+                                legend.title = "CIN signature genes",
+                                xlab = "Time (month)",
+                                title = paste0("SU2C Prostate cancer patients Overall survival \n ", CIN.name, " alteration"),
+                                palette = c("orange", "#5BC0EB"),
+                                font.tickslab = c(15),
+                                risk.table.height = .25)
+
+  print(su2c_prad_relapse)
+}
+```
+
+```{r SU2C oncoplot format alteration info in DKFZ PRAD data, include = F, echo = F, eval = F}
+SU2C_CIN_zscore_matrix
+SU2C_CIN_clincal_matrix
+SU2C_hm_zscore<-list()
+for(i in 1:length(SU2C_CIN_zscore_matrix)){
+  cin.set<-names(SU2C_CIN_zscore_matrix)[i]
+  cin.set.mat<-SU2C_CIN_zscore_matrix[[i]]
+  cin.set.mat[abs(cin.set.mat) < 2] <-0
+  print(range(cin.set.mat))
+  SU2C_hm_zscore[[cin.set]]<-cin.set.mat
+}
+
+generate_heatmap<-function(mat, set.name){
+  col_fun = colorRamp2(c(-5, 0, 5), c("blue", "grey95", "red"))
+  
+  alt_color<-c(altered = "orange", unaltered = "skyblue")
+  OS_color<-c(`NA` = "grey", `0` = "#5B84B1FF", `1` = "#FC766AFF")
+  
+  clinical_annot<-SU2C_CIN_clincal_matrix[[set.name]][,c("SAMPLE_ID", "group", "OS_STATUS")]
+  clinical_annot$OS_STATUS<-as.character(clinical_annot$OS_STATUS)
+  
+  hm_col_annot <- HeatmapAnnotation(df=clinical_annot[,2:3],col=list(
+  group = alt_color, OS_STATUS = OS_color ))
+  
+  hm =  Heatmap(mat,
+        name="z-score",
+        col = col_fun,
+        row_names_gp = gpar(fontsize = 8),
+        row_names_max_width=unit(10, "cm"),
+        show_row_names=T,
+        show_column_names=T,
+        column_names_gp = gpar(fontsize = 5),
+        cluster_rows=F,
+        cluster_columns=F,
+        rect_gp = gpar(col = "grey40", lwd = 1),
+        column_title = paste0(set.name," in SU2C PRAD data"),
+        top_annotation=hm_col_annot,
+        width = ncol(mat)*unit(2, "mm"), 
+        height = nrow(mat)*unit(5, "mm")
+  )
+  draw(hm, heatmap_legend_side = "left", annotation_legend_side = "left")
+}
+
+for (i in 1:length(SU2C_hm_zscore)){
+  pdf(file = paste0("/xdisk/mpadi/jiawenyang/result/centrosome_loss/CINSig/SU2C_Overall_survival/", names(SU2C_hm_zscore)[i], "_alteration_heatmap.pdf"), width = 22, height = 5)
+  generate_heatmap(SU2C_hm_zscore[[i]], names(SU2C_hm_zscore)[i])
+  dev.off()
+}
+```
+
+
+```{R clinical association SU2C/DREAM TEAM, include = F, echo = F, eval = F}
+#GLEASON score
+su2c_clinical_gleason<-clinical_data %>% group_by(group) %>% dplyr::count(GLEASON_SCORE)
+GLEASON_df<-data.frame("altered" = c(5, 15, 8, 26, 6, 17), "unaltered" = c(8, 31, 15, 39, 7, 23),
+                       row.names = c("6", "7", "8", "9", "10", "UNK"))
+fisher.test(GLEASON_df)
+
+#age at dignostic
+age.stat.test <- clinical_data %>%
+  t_test(AGE_AT_DIAGNOSIS ~ group) %>%
+  add_significance()
+age.stat.test
+
+#TMB level
+TMB.stat.test <- clinical_data %>% 
+  t_test(TMB_NONSYNONYMOUS ~ group) %>%
+  add_significance()
+TMB.stat.test
+
+#ETS_FUSION_SEQ level
+su2c_clinical_ets_fusion<-clinical_data %>% group_by(group) %>% dplyr::count(ETS_FUSION_SEQ)
+su2c_clinical_ets_fusion
+ETS_fusion_df<-data.frame("altered" = c(47, 30), "unaltered" = c(71, 53),
+                       row.names = c("Positive", "Negative"))
+fisher.test(ETS_fusion_df)
+```
+
+### Performing association analyses in SU2C/DREAM TEAM 2019 PNAS (mCRPC) dataset with CN-signature 3 associated genes
+
+```{r association analyses in SU2C/DREAM TEAM 2019 PNAS with altered genome, include = T, echo = T, eval = T, fig.width = 10, fig.height = 8}
+su2c_2019_clinical<-read.table(file = "/xdisk/mpadi/jiawenyang/data/centrosome_loss/prad_su2c_2019/prad_su2c_2019_clinical_data_cbioportal.tsv", sep = "\t", header = T)
+su2c_2019_clinical<-su2c_2019_clinical[!duplicated(su2c_2019_clinical$Patient.ID),]
+su2c_clinical_tumor_burden<-left_join(clinical_data, su2c_2019_clinical, by = c("PATIENT_ID" = "Patient.ID"))
+
+genome_altered.stat.test <- su2c_clinical_tumor_burden %>%
+  t_test(Fraction.Genome.Altered ~ group) %>%
+  add_significance()
+genome_altered.stat.test
+
+p_genome_altered<-ggplot(data = su2c_clinical_tumor_burden,
+              aes(x = factor( group, levels = c("altered", "unaltered")),
+                  y = Fraction.Genome.Altered,
+                  fill = group,
+                  color = group)) +
+        theme_light() +
+        geom_boxplot(alpha = 0.4) +
+        geom_jitter(shape = 16, position = position_jitter(0.2)) +
+        scale_fill_manual(values = c("altered" = "orange", "unaltered" = "#5BC0EB")) +
+        scale_color_manual(values = c("altered" = "orange", "unaltered" = "#5BC0EB")) +
+        stat_compare_means(label.y =1, label.x = 2, method = "t.test")+
+        labs(title="Associate CIN signatures genes expression with PCa genome alteration fraction", x="patient groups", y = "Fraction Genome altered")+
+        theme(plot.title = element_text(size=20,  face = "bold"), 
+        axis.text.x = element_text(size = 10,  face = "bold"), axis.text.y = element_text(size = 10, face = "bold"), 
+        axis.title.x = element_text(size = 15, face = "bold"), axis.title.y = element_text(size = 15,  face = "bold"),
+        legend.text = element_text(size = 10, face = "bold"), legend.title = element_text(size = 15,  face = "bold"))
+
+p_genome_altered
+```
+```{r validata signature genes in UK dataset, include = F, echo = F}
+library(GEOquery)
+library(limma)
+library(dbplyr)
+
+sample_info_70769<-GEOquery::getGEO(file = "/xdisk/mpadi/jiawenyang/data/centrosome_loss/geo_data/GSE70770/GSE70769_series_matrix.txt.gz")
+sample_info_70768<-GEOquery::getGEO(file = "/xdisk/mpadi/jiawenyang/data/centrosome_loss/geo_data/GSE70770/GSE70768_series_matrix.txt.gz")
+
+#Clinical data combination
+#1. Gleason Socre , 2. tumor purity, 3. psa, 4. time to bcr. 5. relapse status 6. sample type
+columns_70768<-c("tumour gleason:ch1", "tumour %:ch1", "psa at diag:ch1", "time to bcr (months):ch1", "biochemical relapse (bcr):ch1", "total follow up (months):ch1", "sample type:ch1")
+df_70768<-sample_info_70768@phenoData@data[, columns_70768]
+columns_70769<-c("tumour gleason:ch1", "tumour %:ch1", "psa at diag:ch1", "time to bcr (months):ch1", "biochemical relapse (bcr):ch1", "total follow up (months):ch1", "source_name_ch1")
+df_70769<-sample_info_70769@phenoData@data[, columns_70769]
+colnames(df_70769)<-columns_70768
+clinical_data<-df_70768
+clinical_data_tumor<-clinical_data[clinical_data$`sample type:ch1`!= "Benign",]
+
+
+#Expression data 
+expr_70768<-as.data.frame(sample_info_70768@assayData$exprs)
+expr_70769<-as.data.frame(sample_info_70769@assayData$exprs)
+
+subset_probes<-rownames(sample_info_70768@featureData@data[sample_info_70768@featureData@data$Symbol %in% signature_gene_annotation$hgnc_symbol, ])
+
+normal<-rownames(sample_info_70768@phenoData@data[sample_info_70768@phenoData@data$`sample type:ch1` == "Benign",])
+tumor_70768<-rownames(sample_info_70768@phenoData@data[sample_info_70768@phenoData@data$`sample type:ch1` == "Tumour",])
+normal_expr<-expr_70768[noquote(subset_probes), normal]
+tumor_expr_70768<-expr_70768[noquote(subset_probes), tumor_70768]
+tumor_expr_70769<-expr_70769[noquote(subset_probes), ]
+normal_states<-normal_expr %>% rowwise() %>% summarize(mean = mean (c_across(everything()), na.rm = TRUE),
+                                                       sd = sd(c_across(everything()), na.rm = TRUE)) #calculate mean and standard deviation for each gene in normal samples.
+normal_states<-as.data.frame(normal_states)
+rownames(normal_states)<-rownames(normal_expr)
+
+tumor_expr_70769_zscore<- t(scale(t(tumor_expr_70769), center = T, scale = T))
+
+tumor_expr<-tumor_expr_70768
+tumor_expr_70768_zscore<-data.frame()
+for(i in 1:nrow(tumor_expr)){
+  gene <- rownames(tumor_expr) [i]
+  if(!is.na(normal_states[, "mean"]) && !is.na(normal_states[,"sd"])) {
+    tumor_zdat <- (tumor_expr[i, ] - normal_states[gene, "mean"]) / normal_states[gene, "sd"]
+  }
+  tumor_expr_70768_zscore<-rbind(tumor_expr_70768_zscore, tumor_zdat)
+}
+
+tumor_z_score<-tumor_expr_70769_zscore
+tumor_z_score<-tumor_expr_70768_zscore
+
+altered_group<-c()
+for (i in 1:nrow(tumor_z_score)){
+  sample_id<-colnames(tumor_z_score[,1:ncol(tumor_z_score)])[which(abs(tumor_z_score[i, 1:ncol(tumor_z_score)]) >= 3)]
+  altered_group<-c(altered_group, sample_id)
+}
+unique(altered_group)
+
+alt_sample_metadata<-clinical_data_tumor[rownames(clinical_data_tumor) %in% unique(altered_group), ]
+unalt_sample_metadata<-clinical_data_tumor[!rownames(clinical_data_tumor) %in% unique(altered_group),]
+alt_sample_metadata[, "group"]<-rep("altered", nrow(alt_sample_metadata))
+unalt_sample_metadata[,"group"]<-rep("unaltered", nrow(unalt_sample_metadata))
+clinical_data<-rbind(alt_sample_metadata, unalt_sample_metadata)
+clinical_data$`biochemical relapse (bcr):ch1`<-gsub("Y", 1, clinical_data$`biochemical relapse (bcr):ch1`)
+clinical_data$`biochemical relapse (bcr):ch1`<-gsub("N", 0, clinical_data$`biochemical relapse (bcr):ch1`)
+```
+
+```{r association analysis - disease-free survival, include = F, echo = F}
+library(survival)
+library(ggpubr)
+library(survminer)
+library(rstatix)
+library(ezcox)
+
+clinical_data_KM<-clinical_data[clinical_data$`biochemical relapse (bcr):ch1`!="0/A",]
+clinical_data_KM<-clinical_data_KM[clinical_data_KM$`biochemical relapse (bcr):ch1`!="UNKOWN",]
+clinical_data_KM[clinical_data_KM$`time to bcr (months):ch1`=="N/A", "time to bcr (months):ch1"] <- clinical_data_KM[clinical_data_KM$`time to bcr (months):ch1`=="N/A", "total follow up (months):ch1"]
+
+clinical_data_KM$`time to bcr (months):ch1`<-as.numeric(clinical_data_KM$`time to bcr (months):ch1`)
+clinical_data_KM$`biochemical relapse (bcr):ch1`<-as.numeric(clinical_data_KM$`biochemical relapse (bcr):ch1`)
+
+BCR_curve<-Surv(clinical_data_KM$`time to bcr (months):ch1`, clinical_data_KM$`biochemical relapse (bcr):ch1`)
+BCR_Sfit<-survfit(Surv(`time to bcr (months):ch1`, `biochemical relapse (bcr):ch1`) ~ group, data = clinical_data_KM)
+
+gse70770_prad_relapse<-ggsurvplot(BCR_Sfit, 
+                              conf.int = F, 
+                              pval = T, 
+                              risk.table = T, 
+                              legend.labs = c("altered", "unaltered"),
+                              legend.title = "CIN signature genes",
+                              xlab = "Time (month)",
+                              title = "GSE70770 Prostate cancer patients relapse",
+                              palette = c("orange", "#5BC0EB"),
+                              font.tickslab = c(15),
+                              risk.table.height = .25)
+
+gse70770_prad_relapse
+```
+
+```{r association analysis - ETS, GLEASON Score in su2c, include = F, echo = F}
+#gleason score
+clinical_data_gleason<-clinical_data %>% group_by(group) %>% dplyr::count(`tumour gleason:ch1`)
+clinical_data_gleason[11, "tumour gleason:ch1"]<-"N/A"
+GLEASON_df<-data.frame("altered" = c(2, 1, 17, 37, 20, 2, 4, 7, 3, 2, 3), "unaltered" = c(0, 0, 17, 65, 21, 8, 0, 1, 5, 1, 3),
+                       row.names = c("5=3+2", "6=2+4", "6=3+3", "7=3+4", "7=4+3", "8=3+5", "8=4+4", "9=4+5", "9=5+4", "10=5+5", "N/A"))
+set.seed(555)
+fisher.test(GLEASON_df, simulate.p.value=TRUE)
+```
+```{r visualize the association analysis results in su2c data - gleason score, include = F, echo = F}
+library(RColorBrewer)
+
+col_values = rev(brewer.pal(n = 11, name = "RdBu"))
+col_values[11] <- alpha("grey", 0.6)
+
+p_gleason <- ggplot(data=clinical_data_gleason, 
+            aes(x=factor(group, levels = c("altered", "unaltered")), 
+                y=n, 
+                fill=`tumour gleason:ch1`)) +
+    scale_fill_manual(labels = c("5=3+2", "6=2+4", "6=3+3", "7=3+4", "7=4+3", "8=3+5", "8=4+4", "9=4+5", "9=5+4", "10=5+5", "N/A"), values=col_values) +
+    geom_bar(position = "fill", stat="identity", width = 0.6) +
+    geom_text(aes(label = n), size = 3, hjust = 0.5, vjust = 3, position = "fill") +
+    xlab("sample groups") +                 
+    ylab("Percentage of each sample type") +   
+    ggtitle("Associate CIN signatures genes expression with patients PCa grades") +
+    theme_bw () +
+    theme(title = element_text(face = "bold"),
+          legend.title = element_text(face = "bold"),
+          legend.text = element_text(face = "bold"),
+          axis.text.x = element_text(face = "bold"),
+          axis.text.y = element_text(face = "bold"),
+          axis.title.x = element_text(face = "bold"),
+          strip.text.x = element_blank(),
+          strip.text.y = element_text(angle = 0, face = "bold", hjust = 0),
+          legend.position = "right",
+          panel.spacing = unit(0,'lines'))
+
+p_gleason
+
+set.seed(555)
+print(fisher.test(GLEASON_df, simulate.p.value=TRUE))
+```
+```{r visualize the association analysis results -sample purity in su2c, include = F, echo = F}
+clinical_data$`tumour %:ch1`<-gsub("%", "", clinical_data$`tumour %:ch1`)
+clinical_data$`tumour %:ch1`<-as.numeric(clinical_data$`tumour %:ch1`)
+
+purity.stat.test <- clinical_data %>%
+  t_test(`tumour %:ch1` ~ group) %>%
+  add_significance()
+purity.stat.test
+
+p_purity<-ggplot(data = clinical_data,
+              aes(x = factor(group, levels = c("altered", "unaltered")),
+                  y = `tumour %:ch1`,
+                  fill = group,
+                  color = group)) +
+        theme_light() +
+        geom_boxplot(alpha = 0.4) +
+        geom_jitter(shape = 16, position = position_jitter(0.2)) +
+        scale_fill_manual(values = c("altered" = "orange", "unaltered" = "#5BC0EB")) +
+        scale_color_manual(values = c("altered" = "orange", "unaltered" = "#5BC0EB")) +
+        stat_compare_means(label.y =70, label.x = 2, method = "t.test")+
+        labs(title="Associate CIN signatures genes expression with PCa sample purity", x="patient groups", y = "sample purity")+
+        theme(plot.title = element_text(size=20,  face = "bold"), 
+        axis.text.x = element_text(size = 10,  face = "bold"), axis.text.y = element_text(size = 10, face = "bold"), 
+        axis.title.x = element_text(size = 15, face = "bold"), axis.title.y = element_text(size = 15,  face = "bold"),
+        legend.text = element_text(size = 10, face = "bold"), legend.title = element_text(size = 15,  face = "bold"))
+
+p_purity
+```
+
+
+## Associating CN-signature exposure score with MSI score in SU2C DREAM TEAM dataset
+
+```{r Introducing MSI score as a validation in SU2C metastatic-prad samples, eval = T, include = T, echo = T}
+library(readxl)
+su2c_dbgap_sample_id<-read.table(file = "/xdisk/mpadi/jiawenyang/data/centrosome_loss/MSI_score/phs000915.v2.p2.txt", sep = "\t", header = T)
+#https://www.ncbi.nlm.nih.gov/gap/sstr/report/phs000915.v2.p2
+msi_sample_id<-readxl::read_excel("/xdisk/mpadi/jiawenyang/data/centrosome_loss/MSI_score/oncotarget-08-7452-s002.xlsx", sheet = "PRAD MSS (SU2C)")
+msi_scores_prad<-readxl::read_excel("/xdisk/mpadi/jiawenyang/data/centrosome_loss/MSI_score/oncotarget-08-7452-s003.xlsx", sheet = "PRAD MSS")
+
+su2c_clinical_data<-dplyr::left_join(su2c_clinical_data, msi_scores_prad, by = c("PATIENT_ID" = "Sample"))
+su2c_clinical_data<-su2c_clinical_data[su2c_clinical_data$PATIENT_ID %in% msi_sample_id$`Submitted subject id`,]
+```
+
+```{r associate MSI level with cn-sigature level, eval = T, fig.width = 10, fig.height = 8}
+Sig.CNV.seqz_cl_cells_prad_patients_with_clinical<-read.csv("/xdisk/mpadi/jiawenyang/result/centrosome_loss/sigminer/copy_number_signatures_enrichment_results_with_clinical_info.csv")
+Sig.CNV.seqz_cl_cells_prad_patients_with_clinical<-Sig.CNV.seqz_cl_cells_prad_patients_with_clinical[Sig.CNV.seqz_cl_cells_prad_patients_with_clinical$subject_id %in% su2c_clinical_data$PATIENT_ID,]
+
+su2c_clinical_data_with_cn_sig <- Sig.CNV.seqz_cl_cells_prad_patients_with_clinical[Sig.CNV.seqz_cl_cells_prad_patients_with_clinical$subject_id %in% intersect(msi_scores_prad$Sample, Sig.CNV.seqz_cl_cells_prad_patients_with_clinical$subject_id),]
+
+msi_scores_prad_cn_sig <- msi_scores_prad[msi_scores_prad$Sample %in% intersect(msi_scores_prad$Sample, Sig.CNV.seqz_cl_cells_prad_patients_with_clinical$subject_id), ]
+msi_scores_prad_cn_sig$Sample <- as.character(msi_scores_prad_cn_sig$Sample)
+
+msi_scores_prad_cn_sig<-left_join(msi_scores_prad_cn_sig, su2c_clinical_data_with_cn_sig, by = c("Sample" = "subject_id"))
+msi_scores_prad_cn_sig$enrich_sig <- paste0("CN-", msi_scores_prad_cn_sig$enrich_sig)
+
+cn_sig1_sig3_test<-t.test(MSISensor ~ enrich_sig, data = msi_scores_prad_cn_sig[msi_scores_prad_cn_sig$enrich_sig %in% c("CN-Sig1" ,"CN-Sig3"),])
+
+p_cn_sig_MSI<-ggplot(data = msi_scores_prad_cn_sig,
+              aes(x = factor(enrich_sig, levels = c("CN-Sig1", "CN-Sig2", "CN-Sig3")),
+                  y = MSISensor ,
+                  fill = enrich_sig,
+                  color = enrich_sig)) +
+        theme_light() +
+        geom_boxplot(alpha = 0.4) +
+        geom_jitter(shape = 16, position = position_jitter(0.2)) +
+        scale_fill_manual(labels = c("CN-Sig1", "CN-Sig2", "CN-Sig3"), values=c("#050506", "#DE8B36", "#CD4224")) +
+        scale_color_manual(labels = c("CN-Sig1", "CN-Sig2", "CN-Sig3"), values=c("#050506", "#DE8B36", "#CD4224")) +
+        labs(title="Associate CIN signatures genes expression with PCa sample MSI score", 
+             x="CN-Signature groups", 
+             y = "Microsatelight Instability (MSI) score")+
+        theme(plot.title = element_text(size=20,  face = "bold"), 
+        axis.text.x = element_text(size = 10,  face = "bold"), axis.text.y = element_text(size = 10, face = "bold"), 
+        axis.title.x = element_text(size = 15,  face = "bold"), axis.title.y = element_text(size = 15,  face = "bold"),
+        legend.text = element_text(size = 10, face = "bold"), legend.title = element_text(size = 15, face = "bold"))
+
+p_cn_sig_MSI
+
+cn_sig1_sig3_test
+```
+
+```{r correlating MSI level with cn-sigature score, eval = T, include = T, echo = T, fig.width = 10, fig.height = 8}
+CN_sig_score<-readRDS(file ="/xdisk/mpadi/jiawenyang/result/centrosome_loss/sigminer/Sig.CNV.seqz_cl_cells_prad_patients_3_sig_groups.RDS")
+CN_sig_score<-as.data.frame(t(CN_sig_score$Exposure))
+CN_sig_score[,"sample"]<-rownames(CN_sig_score)
+CN_sig_score[,"sample"]<-gsub("-SRR\\w+", "", CN_sig_score[,"sample"])
+
+msi_scores_prad_cn_score<-left_join(msi_scores_prad_cn_sig, CN_sig_score, by = c("Sample" = "sample"))
+msi_scores_prad_cn_score
+
+ggplot(msi_scores_prad_cn_score, aes(x=Sig3, y=MANTIS, color = MANTIS)) + 
+  geom_point(color = "#CD4224")+
+  theme_light() +
+  geom_smooth(method=lm, color = alpha("#CD4224", 0.4)) +
+  stat_cor(method = "pearson", label.x = 100, label.y = 0.3 )+
+  xlab("CN-sig3 exposure score") +                 
+  ylab("Microsatelight Instability (MSI) score") +   
+  ggtitle("CN-signature and MSI correlation") +
+  theme(plot.title = element_text(size=20, face = "bold"), 
+        axis.text.x = element_text(size = 10,  face = "bold"), axis.text.y = element_text(size = 10,  face = "bold"), 
+        axis.title.x = element_text(size = 15,  face = "bold"), axis.title.y = element_text(size = 15,  face = "bold"),
+        legend.text = element_text(size = 10, face = "bold"), legend.title = element_text(size = 15,  face = "bold"))
+
+ggplot(msi_scores_prad_cn_score, aes(x=Sig2, y=MANTIS, color = MANTIS)) + 
+  geom_point(color = "#DE8B36")+
+  theme_light() +
+  geom_smooth(method=lm, color = alpha("#DE8B36", 0.4)) +
+  stat_cor(method = "pearson", label.x = 10, label.y = 0.3) +
+  xlab("CN-sig2 exposure score") +                 
+  ylab("Microsatelight Instability (MSI) score") +   
+  ggtitle("CN-signature and MSI correlation") +
+  theme(plot.title = element_text(size=20,  face = "bold"), 
+        axis.text.x = element_text(size = 10,  face = "bold"), axis.text.y = element_text(size = 10, face = "bold"), 
+        axis.title.x = element_text(size = 15, face = "bold"), axis.title.y = element_text(size = 15,  face = "bold"),
+        legend.text = element_text(size = 10,  face = "bold"), legend.title = element_text(size = 15,  face = "bold"))
+
+ggplot(msi_scores_prad_cn_score, aes(x=Sig1, y=MANTIS, color = MANTIS)) + 
+  geom_point(color = "black")+
+  theme_light() +
+  geom_smooth(method=lm, color = alpha("black", 0.4)) +
+  stat_cor(method = "pearson", label.x = 150, label.y = 0.3) +
+  xlab("CN-sig1 exposure score") +                 
+  ylab("Microsatelight Instability (MSI) score") +   
+  ggtitle("CN-signature and MSI correlation") +
+  theme(plot.title = element_text(size=20,  face = "bold"), 
+        axis.text.x = element_text(size = 10,  face = "bold"), axis.text.y = element_text(size = 10,  face = "bold"), 
+        axis.title.x = element_text(size = 15,  face = "bold"), axis.title.y = element_text(size = 15,  face = "bold"),
+        legend.text = element_text(size = 10,  face = "bold"), legend.title = element_text(size = 15,  face = "bold"))
+```
+<a href="#top2" class="back-to-top">Back to top</a>
+
+**_[back to home](/centrosome_loss_and_PCa/index.html)_**
+

@@ -1,6 +1,5 @@
 ---
 title: "Transient centrosome-loss WGS data processing"
-author: "Jiawen yang"
 date: "`r Sys.Date()`"
 output:  rmdformats::material
 ---

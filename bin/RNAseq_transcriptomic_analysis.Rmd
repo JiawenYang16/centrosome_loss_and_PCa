@@ -1,0 +1,613 @@
+---
+title: "Transcriptomic analyses of transient centrosome-loss samples"
+date: "`r Sys.Date()`"
+output:  rmdformats::material
+---
+<style type="text/css">
+
+body{ /* Normal  */
+      font-size: 12px;
+  }
+td {  /* Table  */
+  font-size: 12px;
+}
+h1.title {
+  font-size: 25px;
+  color: White;
+  font-family:"Arial";
+}
+h1 { /* Header 1 */
+  font-size: 24px;
+  color: DarkBlue;
+  font-family:"Arial";
+}
+h2 { /* Header 2 */
+    font-size: 22px;
+  color: DarkBlue;
+  font-family:"Arial";
+}
+h3 { /* Header 3 */
+  font-size: 20px;
+  font-family: "Times New Roman", Times, serif;
+  color: DarkBlue;
+}
+code.r{ /* Code block */
+    font-size: 12px;
+}
+pre { /* Code block - determines code spacing between lines */
+    font-size: 12px;
+}
+</style>
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = T, include = T, eval = F, warning = F, message = F)
+```
+
+```{r clean enviroment, echo = F, include = F}
+rm(list = ls())
+gc()
+```
+
+```{r load library, warning = F, message = F, eval = T}
+dyn.load("/opt/ohpc/pub/apps/glpk/5.0/lib/libglpk.so.40")
+library(limma)
+library(edgeR)
+library(biomaRt)
+library(dplyr)
+library(ggplot2)
+library(plotly)
+library(ggrepel)
+library(ShatterSeek)
+library(igraph)
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(GSA)
+library(devtools)
+library(dbplyr) #re-install this version of dbplyer if the annotation step fails.
+
+#Sample annotation to keep consistent with WGS analysis
+#PrEC represents PrEC Hahn parental cells
+#CN9 represents transient centrosome-loss cells CTN9
+#CN1_1 represents trasient centrosome-loss xenograft tumor CTN9-T1 (or CN9R1_1)
+#CN1_2 represents trasient centrosome-loss xenograft tumor CTN9-T2 (or CN9R1_2)
+#CN2_2 represents trasient centrosome-loss xenograft tumor CTN9-T4 (or CN9R2_2)
+```
+
+# RNA-seq data analysis
+
+<div id="top1"></div>
+
+**_[back to home](/centrosome_loss_and_PCa/index.html)_**
+
+## Data normalization and DEGs analysis
+```{r import data, eval = T}
+CN_samples<-list.files(path = "/xdisk/mpadi/jiawenyang/data/centrosome_loss/rnaseq/raw_reads",
+                       pattern = ".RDS",
+                       full.names = T,
+                       recursive = T)
+
+read_count<-readRDS(CN_samples[1])$count
+colnames(read_count)<-strsplit(basename(CN_samples[1]), "[.]")[[1]][1]
+
+for (i in 2:length(CN_samples)){
+  file <- readRDS(CN_samples[i])
+  sample_id<-strsplit(basename(CN_samples[i]), "[.]")[[1]][1]
+  df<- file$counts
+  colnames(df)<-sample_id
+  read_count<-cbind(read_count, df)
+}
+
+group<-factor(c(rep("CN1_1", 3), rep("CN1_2", 3), rep("CN2_2", 3), rep("CN9", 3), rep("PrEC", 3)))
+
+y <-DGEList(counts = read_count, group = group)
+keep <- base::rowSums(edgeR::cpm(y) > 1) >= length(group)/5
+y <- y[keep, keep.lib.sizes = FALSE]
+y <- calcNormFactors(y)
+design <- model.matrix(~0 + group)
+colnames(design)<-gsub("group", "", colnames(design))
+temp <- voom(y, design, plot = T)
+edat <- temp$E
+edat <- as.data.frame(edat)
+fit <- lmFit(temp, design) 
+efit <- eBayes(fit)
+plotSA(efit, main = "Final model: Mean-variance trend")
+
+#optimize this part! check the p-value for all comparison.
+contr.matrix<-makeContrasts(
+  CN9_vs_PrEC = CN9 - PrEC,
+  CN_tumors_vs_PrEC = (CN1_1 + CN1_2 + CN2_2)/3 - PrEC,
+  CN_tumors_vs_CN9 = (CN1_1 + CN1_2 + CN2_2)/3 - CN9,
+  levels = colnames(design))
+colnames(fit$coefficients)<-gsub("group", "", colnames(fit$coefficients))
+vfit <- contrasts.fit(fit, contrasts = contr.matrix)
+efit <- eBayes(vfit)
+
+CN9_vs_PrEC<-topTable(efit, n = Inf, adjust = "BH", coef = "CN9_vs_PrEC")
+CN_tumors_vs_PrEC<-topTable(efit, n = Inf, adjust = "BH", coef = "CN_tumors_vs_PrEC")
+CN_tumors_vs_CN9<-topTable(efit, n = Inf, adjust = "BH", coef = "CN_tumors_vs_CN9")
+CN_sample_DEG_list<-list(CN9_vs_PrEC = CN9_vs_PrEC, CN_tumors_vs_PrEC = CN_tumors_vs_PrEC, CN_tumors_vs_CN9 = CN_tumors_vs_CN9)
+```
+
+## Gene location and symbol annotation
+
+```{r make annoation on genes, include = T, echo = T}
+ensembl<-readRDS(file = "/xdisk/mpadi/jiawenyang/src/biomaRt/hsapiens_gene_ensembl.rds")
+ensemblId<-rownames(CN9_vs_PrEC)
+ensemblId<-unlist(lapply(ensemblId, function(x) strsplit(x, "[.]")[[1]][1]))
+CN_samples_seq_annotation<-biomaRt::getBM(filters= "ensembl_gene_id", attributes= c("ensembl_gene_id","hgnc_symbol","chromosome_name","band","description","start_position","end_position", "entrezgene_id"),
+                        values=ensemblId, mart=ensembl)
+
+CN9_vs_PrEC[, "ensembl_gene_id"]<-unlist(lapply(rownames(CN9_vs_PrEC), function(x) strsplit(x, "[.]")[[1]][1]))
+CN9_vs_PrEC[, "ensembl"]<-rownames(CN9_vs_PrEC)
+
+CN_tumors_vs_PrEC[, "ensembl_gene_id"]<-unlist(lapply(rownames(CN_tumors_vs_PrEC), function(x) strsplit(x, "[.]")[[1]][1]))
+CN_tumors_vs_PrEC[, "ensembl"]<-rownames(CN_tumors_vs_PrEC)
+
+CN_tumors_vs_CN9[, "ensembl_gene_id"]<-unlist(lapply(rownames(CN_tumors_vs_CN9), function(x) strsplit(x, "[.]")[[1]][1]))
+CN_tumors_vs_CN9[, "ensembl"]<-rownames(CN_tumors_vs_CN9)
+
+CN9_vs_PrEC_new<-left_join(CN9_vs_PrEC, CN_samples_seq_annotation, by = "ensembl_gene_id")
+CN_tumors_vs_PrEC_new<-left_join(CN_tumors_vs_PrEC, CN_samples_seq_annotation, by = "ensembl_gene_id")
+CN_tumors_vs_CN9_new<-left_join(CN_tumors_vs_CN9, CN_samples_seq_annotation, by = "ensembl_gene_id")
+
+CN_sample_DEG_list<-list(CN9_vs_PrEC = CN9_vs_PrEC_new, CN_tumors_vs_PrEC = CN_tumors_vs_PrEC_new, CN_tumors_vs_CN9 = CN_tumors_vs_CN9_new)
+```
+
+## Visualizing sample distance by PCA plot
+
+```{r,  3D pca plot of the centrosome loss samples, include = T, echo = T, eval = T}
+df.pca=prcomp(t(edat),center = TRUE,scale. = TRUE)
+percentage <- round(df.pca$sdev / sum(df.pca$sdev) * 100, 2)
+tot_explained_variance_ratio <- summary(df.pca)[["importance"]]['Proportion of Variance',]
+tot_explained_variance_ratio<- 100 * sum(tot_explained_variance_ratio)
+
+tit<-paste0("Total Explained Variance = ", tot_explained_variance_ratio, "\n PCA of normalized centrosome loss samples")
+
+components<-data.frame(df.pca$x[,1],df.pca$x[,2],df.pca$x[,3], group, rownames(df.pca$x))
+colnames(components)<-c("PC1","PC2", "PC3", "group", "sample_names")
+
+axx <- list(
+  title = paste0("PC1 (", percentage[1], ")" ))
+axy <- list(
+  title = paste0("PC2 (", percentage[2], ")" ))
+
+axz <- list(
+  title = paste0("PC3 (", percentage[3], ")" ))
+
+fig <- plot_ly(components, x = ~PC1, y = ~PC2, z = ~PC3, color = ~group, colors = c('#636EFA','#EF553B','#00CC96','#000000'), marker = list(size = 8)) %>%
+  add_markers(size = 28)
+
+
+fig <- fig %>%
+  layout(
+    title = tit,
+    scene = list(bgcolor = "white", 
+                 xaxis=axx, 
+                 yaxis=axy, 
+                 zaxis=axz)
+    )
+
+fig
+```
+
+<a href="#top1" class="back-to-top">Back to top</a>
+
+# Examining consistent focal CNV associated genes in transcriptomic data
+
+<div id="top2"></div>
+
+**_[back to home](/centrosome_loss_and_PCa/index.html)_**
+
+## Volcano plot showing downregulated Y chromosome gene expression in xenograft tumors vs. CTN-9 cells
+
+```{r functional study based on the tumor and CN9 cells, eval = T, fig.width = 8, fig.height= 6}
+Tumor_vs_CN9<-read.csv(file = "/xdisk/mpadi/jiawenyang/result/centrosome_loss/RNAseq/CN_tumors_vs_CN9_DEGs.csv")
+
+#volcano plot for Y chr
+volc<-data.frame(log2fc = Tumor_vs_CN9[,"logFC"],
+                 sig = -1*log10(Tumor_vs_CN9[,"adj.P.Val"]),
+                 genes = Tumor_vs_CN9[, "hgnc_symbol"],
+                 chromosome = Tumor_vs_CN9[, "chromosome_name"],
+                 ensembl = Tumor_vs_CN9[, "ensembl_gene_id"])
+volc$de <- "NS"
+volc$de[volc$sig>-1*log10(0.05)] <- "Significant"
+annotate_chrY<-volc[volc$chromosome == "Y",]
+
+
+p<-ggplot(volc,aes(x=log2fc,y=sig))+
+  theme_linedraw()+
+  theme_light()+
+  geom_point(col = "grey50", size = 3, alpha = 0.3)+
+  geom_point(data = annotate_chrY, # New layer containing data subset il_genes       
+             size = 3,
+             shape = 21,
+             fill = "blue",
+             alpha = 0.8,
+             colour = "black")+
+  geom_text_repel(data = annotate_chrY, aes(label = genes), size = 2.8, fontface = "bold", colour = "black", force = 1, box.padding = 0.5, max.overlaps = 20) +
+  geom_vline(xintercept=c(-1, 1), col="red",linetype=4)+
+  geom_hline(yintercept=-1*log10(0.05),col="black", linetype=4)+
+  ylab("-log10(Padj)") +
+  xlab("Transient centrosome-loss tumors vs. CTN-9 cells \n Log2(Fold Change) \n Y chr associated genes")
+p<-p+theme(axis.title=element_text(size=15,face="bold"),
+           axis.text = element_text(size =15, face="bold"))
+p
+```
+
+## Volcano plot illustrating gene expression changes in transient centrosome-loss tumors vs. transient centrosome-loss cells, with annotation of genes in consistent focal CNV regions shared between TCGA PRAD CN-signature 3 samples and transient centrosome-loss tumors
+
+### 17p13.1 loss
+
+```{r volcano plot of the DEGs comparisons on 17p13.1 - Tumor vs. CTN-9, eval = T, fig.width = 8, fig.height= 6}
+
+#volcano plot for consistent focal CNV regions
+volc<-data.frame(log2fc = Tumor_vs_CN9[,"logFC"],
+                 sig = -1*log10(Tumor_vs_CN9[,"adj.P.Val"]),
+                 genes = Tumor_vs_CN9[, "hgnc_symbol"], 
+                 chr = Tumor_vs_CN9[, "chromosome_name"],
+                 bands = Tumor_vs_CN9[, "band"])
+
+#17p13.1 as example
+annotate_down_df<-volc[volc$log2fc <= -1 & volc$chr == 17 & volc$bands == "p13.1", ]
+annotate_up_df<-volc[volc$log2fc >= 1 & volc$chr == 17 & volc$bands == "p13.1", ]
+
+p<-ggplot(volc,aes(x=log2fc,y=sig))+
+  theme_linedraw()+
+  theme_light()+
+  geom_point(col = "grey50", size = 3, alpha = 0.3)+
+  geom_point(data = annotate_down_df , # New layer containing data subset il_genes       
+             size = 3,
+             shape = 21,
+             alpha = 0.8,
+             fill = "blue",
+             colour = "black")+
+  geom_text_repel(data = annotate_down_df, aes(label = genes), size = 2.8, fontface = "bold", colour = "black", force = 0.5, max.overlaps = 200) +
+  geom_point(data = annotate_up_df, # New layer containing data subset il_genes       
+             size = 3,
+             shape = 21,
+             fill = "firebrick",
+             alpha = 0.8,
+             colour = "black")+
+  geom_text_repel(data = annotate_up_df, aes(label = genes), size = 2.8, fontface = "bold", colour = "black", force = 0.5, box.padding = 0.5, max.overlaps = 200) +
+  geom_vline(xintercept=c(-1, 1), col="red",linetype=4)+
+  coord_cartesian(xlim = c(-4, 4)) +
+  geom_hline(yintercept=-1*log10(0.05),col="black", linetype=4)+
+  ylab("-log10(Padj)") +
+  xlab("Transient centrosome-loss tumors vs. CTN-9 cells \n Log2(Fold Change) \n 17p13.1 associated genes")
+p<-p+theme(axis.title=element_text(size=15,face="bold"),
+           axis.text = element_text(size =15, face="bold"))
+p
+```
+
+### 8q24.21 gain
+
+```{r volcano plot of the DEGs comparisons on 8q24.21 - Tumor vs. CTN-9, eval = T, echo = F, fig.width = 8, fig.height= 6}
+annotate_down_df<-volc[volc$log2fc <= -1 & volc$chr == 8 & volc$bands == "q24.21", ]
+annotate_up_df<-volc[volc$log2fc >= 1 & volc$chr == 8 & volc$bands == "q24.21", ]
+
+p<-ggplot(volc,aes(x=log2fc,y=sig))+
+  theme_linedraw()+
+  theme_light()+
+  geom_point(col = "grey50", size = 3, alpha = 0.3)+
+  geom_point(data = annotate_down_df , # New layer containing data subset il_genes       
+             size = 3,
+             shape = 21,
+             alpha = 0.8,
+             fill = "blue",
+             colour = "black")+
+  geom_text_repel(data = annotate_down_df, aes(label = genes), size = 2.8, fontface = "bold", colour = "black", force = 0.5, max.overlaps = 200) +
+  geom_point(data = annotate_up_df, # New layer containing data subset il_genes       
+             size = 3,
+             shape = 21,
+             fill = "firebrick",
+             alpha = 0.8,
+             colour = "black")+
+  geom_text_repel(data = annotate_up_df, aes(label = genes), size = 2.8, fontface = "bold", colour = "black", force = 0.5, box.padding = 0.5, max.overlaps = 200) +
+  geom_vline(xintercept=c(-1, 1), col="red",linetype=4)+
+  coord_cartesian(xlim = c(-4, 4)) +
+  geom_hline(yintercept=-1*log10(0.05),col="black", linetype=4)+
+  ylab("-log10(Padj)") +
+  xlab("Transient centrosome-loss tumors vs. CTN-9 cells \n Log2(Fold Change) \n 8q24.21 associated genes")
+p<-p+theme(axis.title=element_text(size=15,face="bold"),
+           axis.text = element_text(size =15, face="bold"))
+p
+```
+
+### 21q22.3 loss
+
+```{r volcano plot of the DEGs comparisons on 21q22.3 - Tumor vs. CTN9, eval = T, echo = F, fig.width = 8, fig.height= 6}
+annotate_down_df<-volc[volc$log2fc <= -1 & volc$chr == 21 & volc$bands == "q22.3", ]
+annotate_up_df<-volc[volc$log2fc >= 1 & volc$chr == 21 & volc$bands == "q22.3 ", ]
+
+p<-ggplot(volc,aes(x=log2fc,y=sig))+
+  theme_linedraw()+
+  theme_light()+
+  geom_point(col = "grey50", size = 3, alpha = 0.3)+
+  geom_point(data = annotate_down_df , # New layer containing data subset il_genes       
+             size = 3,
+             shape = 21,
+             alpha = 0.8,
+             fill = "blue",
+             colour = "black")+
+  geom_text_repel(data = annotate_down_df, aes(label = genes), size = 2.8, fontface = "bold", colour = "black", force = 0.5, max.overlaps = 200) +
+  geom_point(data = annotate_up_df, # New layer containing data subset il_genes       
+             size = 3,
+             shape = 21,
+             fill = "firebrick",
+             alpha = 0.8,
+             colour = "black")+
+  geom_text_repel(data = annotate_up_df, aes(label = genes), size = 2.8, fontface = "bold", colour = "black", force = 0.5, box.padding = 0.5, max.overlaps = 200) +
+  geom_vline(xintercept=c(-1, 1), col="red",linetype=4)+
+  coord_cartesian(xlim = c(-4, 4)) +
+  geom_hline(yintercept=-1*log10(0.05),col="black", linetype=4)+
+  ylab("-log10(Padj)") +
+  xlab("Transient centrosome-loss tumors vs. CTN-9 cells \n Log2(Fold Change) \n 21q22.3 associated genes")
+p<-p+theme(axis.title=element_text(size=15,face="bold"),
+           axis.text = element_text(size =15, face="bold"))
+p
+```
+
+### 5q11.2 loss 
+
+```{r volcano plot of the DEGs comparisons on 5q11.2 - Tumor vs. CTN9, eval = T, echo = F, fig.width = 8, fig.height= 6}
+annotate_down_df<-volc[volc$log2fc <= -1 & volc$chr == 5 & volc$bands == "q11.2", ]
+annotate_up_df<-volc[volc$log2fc >= 1 & volc$chr == 5 & volc$bands == "q11.2 ", ]
+
+p<-ggplot(volc,aes(x=log2fc,y=sig))+
+  theme_linedraw()+
+  theme_light()+
+  geom_point(col = "grey50", size = 3, alpha = 0.3)+
+  geom_point(data = annotate_down_df , # New layer containing data subset il_genes       
+             size = 3,
+             shape = 21,
+             alpha = 0.8,
+             fill = "blue",
+             colour = "black")+
+  geom_text_repel(data = annotate_down_df, aes(label = genes), size = 2.8, fontface = "bold", colour = "black", force = 0.5, max.overlaps = 200) +
+  geom_point(data = annotate_up_df, # New layer containing data subset il_genes       
+             size = 3,
+             shape = 21,
+             fill = "firebrick",
+             alpha = 0.8,
+             colour = "black")+
+  geom_text_repel(data = annotate_up_df, aes(label = genes), size = 2.8, fontface = "bold", colour = "black", force = 0.5, box.padding = 0.5, max.overlaps = 200) +
+  geom_vline(xintercept=c(-1, 1), col="red",linetype=4)+
+  coord_cartesian(xlim = c(-4, 4)) +
+  geom_hline(yintercept=-1*log10(0.05),col="black", linetype=4)+
+  ylab("-log10(Padj)") +
+  xlab("Transient centrosome-loss tumors vs. CTN-9 cells \n Log2(Fold Change) \n 5q11.2 associated genes")
+p<-p+theme(axis.title=element_text(size=15,face="bold"),
+           axis.text = element_text(size =15, face="bold"))
+p
+```
+
+### 8p21.2 loss
+
+```{r volcano plot of the DEGs comparisons on 8p21.2 - Tumor vs. CTN9, eval = T, echo = F, fig.width = 8, fig.height= 6}
+annotate_down_df<-volc[volc$log2fc <= -1 & volc$chr == 8 & volc$bands == "p21.2", ]
+annotate_up_df<-volc[volc$log2fc >= 1 & volc$chr == 8 & volc$bands == "p21.2 ", ]
+
+p<-ggplot(volc,aes(x=log2fc,y=sig))+
+  theme_linedraw()+
+  theme_light()+
+  geom_point(col = "grey50", size = 3, alpha = 0.3)+
+  geom_point(data = annotate_down_df , # New layer containing data subset il_genes       
+             size = 3,
+             shape = 21,
+             alpha = 0.8,
+             fill = "blue",
+             colour = "black")+
+  geom_text_repel(data = annotate_down_df, aes(label = genes), size = 2.8, fontface = "bold", colour = "black", force = 0.5, max.overlaps = 200) +
+  geom_point(data = annotate_up_df, # New layer containing data subset il_genes       
+             size = 3,
+             shape = 21,
+             fill = "firebrick",
+             alpha = 0.8,
+             colour = "black")+
+  geom_text_repel(data = annotate_up_df, aes(label = genes), size = 2.8, fontface = "bold", colour = "black", force = 0.5, box.padding = 0.5, max.overlaps = 200) +
+  geom_vline(xintercept=c(-1, 1), col="red",linetype=4)+
+  coord_cartesian(xlim = c(-4, 4)) +
+  geom_hline(yintercept=-1*log10(0.05),col="black", linetype=4)+
+  ylab("-log10(padj)") +
+  xlab("Transient centrosome-loss tumors vs. CTN-9 cells \n Log2(Fold Change) \n 8p21.2 associated genes")
+p<-p+theme(axis.title=element_text(size=15,face="bold"),
+           axis.text = element_text(size =15, face="bold"))
+p
+```
+
+### 1p36.22 loss
+
+```{r volcano plot of the DEGs comparisons on 1p36.22 - Tumor vs. CTN-9, eval = T, echo = F, fig.width = 8, fig.height= 6}
+annotate_down_df<-volc[volc$log2fc <= -1 & volc$chr == 1 & volc$bands == "p36.22", ]
+annotate_up_df<-volc[volc$log2fc >= 1 & volc$chr == 1 & volc$bands == "p36.22", ]
+
+p<-ggplot(volc,aes(x=log2fc,y=sig))+
+  theme_linedraw()+
+  theme_light()+
+  geom_point(col = "grey50", size = 3, alpha = 0.3)+
+  geom_point(data = annotate_down_df , # New layer containing data subset il_genes       
+             size = 3,
+             shape = 21,
+             alpha = 0.8,
+             fill = "blue",
+             colour = "black")+
+  geom_text_repel(data = annotate_down_df, aes(label = genes), size = 2.8, fontface = "bold", colour = "black", force = 0.5, max.overlaps = 200) +
+  geom_point(data = annotate_up_df, # New layer containing data subset il_genes       
+             size = 3,
+             shape = 21,
+             fill = "firebrick",
+             alpha = 0.8,
+             colour = "black")+
+  geom_text_repel(data = annotate_up_df, aes(label = genes), size = 2.8, fontface = "bold", colour = "black", force = 0.5, box.padding = 0.5, max.overlaps = 200) +
+  geom_vline(xintercept=c(-1, 1), col="red",linetype=4)+
+  coord_cartesian(xlim = c(-4, 4)) +
+  geom_hline(yintercept=-1*log10(0.05),col="black", linetype=4)+
+  ylab("-log10(padj)") +
+  xlab("Transient centrosome-loss tumors vs. CTN-9 cells \n Log2(Fold Change) \n 1p36.22 associated genes")
+p<-p+theme(axis.title=element_text(size=20,face="bold"),
+           axis.text = element_text(size =15, face="bold"))
+p
+```
+
+### 18q22.3 loss
+
+```{r volcano plot of the DEGs comparisons on 18q22.3 - Tumor vs. CTN9, eval = T, echo = F, fig.width = 8, fig.height= 6}
+annotate_down_df<-volc[volc$log2fc <= -1 & volc$chr == 18 & volc$bands == "q22.3", ]
+annotate_up_df<-volc[volc$log2fc >= 1 & volc$chr == 18 & volc$bands == "p22.3", ]
+
+p<-ggplot(volc,aes(x=log2fc,y=sig))+
+  theme_linedraw()+
+  theme_light()+
+  geom_point(col = "grey50", size = 3, alpha = 0.3)+
+  geom_point(data = annotate_down_df , # New layer containing data subset il_genes       
+             size = 3,
+             shape = 21,
+             alpha = 0.8,
+             fill = "blue",
+             colour = "black")+
+  geom_text_repel(data = annotate_down_df, aes(label = genes), size = 2.8, fontface = "bold", colour = "black", force = 0.5, max.overlaps = 200) +
+  geom_point(data = annotate_up_df, # New layer containing data subset il_genes       
+             size = 3,
+             shape = 21,
+             fill = "firebrick",
+             alpha = 0.8,
+             colour = "black")+
+  geom_text_repel(data = annotate_up_df, aes(label = genes), size = 2.8, fontface = "bold", colour = "black", force = 0.5, box.padding = 0.5, max.overlaps = 200) +
+  geom_vline(xintercept=c(-1, 1), col="red",linetype=4)+
+  coord_cartesian(xlim = c(-4, 4)) +
+  geom_hline(yintercept=-1*log10(0.05),col="black", linetype=4)+
+  ylab("-log10(padj)") +
+  xlab("Transient centrosome-loss tumors vs. CTN-9 cells \n Log2(Fold Change) \n 18q22.3")
+p<-p+theme(axis.title=element_text(size=15,face="bold"),
+           axis.text = element_text(size =15, face="bold"))
+p
+```
+
+## Volcano plot displaying the expression changes of CN-signature 3 associated CIN genes in transient centrosome-loss xenograft tumor vs. transient centrosome-loss cells
+
+```{r volcano plot of the CN-signature 3 associated genes - tumor_vs_CTN-9, eval = T, fig.width = 8, fig.height= 6}
+CIN_sig_genes<-c("PRR11", "SMC2", "KIF11", "PPP6R3", "ACOT2", "SHC2", "TMEM183A", "ZNF667","SMC2")
+annotate_genes<-volc[volc$genes %in% CIN_sig_genes,]
+annotate_down_df<-annotate_genes[annotate_genes$log2fc <= 0, ]
+annotate_up_df<-annotate_genes[annotate_genes$log2fc > 0, ]
+
+p<-ggplot(volc,aes(x=log2fc,y=sig))+
+  theme_linedraw()+
+  theme_light()+
+  geom_point(col = "grey50", size = 3, alpha = 0.3)+
+  geom_point(data = annotate_down_df , # New layer containing data subset il_genes       
+             size = 3,
+             shape = 21,
+             alpha = 0.8,
+             fill = "blue",
+             colour = "black")+
+  geom_text_repel(data = annotate_down_df, aes(label = genes), size = 2.8, fontface = "bold", colour = "black", force = 1, max.overlaps = 50) +
+  geom_point(data = annotate_up_df, # New layer containing data subset il_genes       
+             size = 3,
+             shape = 21,
+             fill = "firebrick",
+             alpha = 0.8,
+             colour = "black")+
+  geom_text_repel(data = annotate_up_df, aes(label = genes), size = 2.8, fontface = "bold", colour = "black", force = 1, box.padding = 0.5, max.overlaps = 50) +
+  geom_vline(xintercept=c(-1, 1), col="red",linetype=4)+
+  geom_hline(yintercept=-1*log10(0.05),col="black", linetype=4)+
+  ylab("-log10(Padj)") +
+  xlab("Transient centrosome-loss tumors vs. CTN-9 cells \n Log2(Fold Change) \n CN-signature 3 associated genes")
+p<-p+theme(axis.title=element_text(size=15,face="bold"),
+           axis.text = element_text(size =15, face="bold"))
+p
+```
+<a href="#top2" class="back-to-top">Back to top</a>
+
+# Inferring Gene fusion events from RNAseq data
+
+<div id="top3"></div>
+
+**_[back to home](/centrosome_loss_and_PCa/index.html)_**
+
+## Performing gene fusion detection using Star Fusion
+```{sh Performing gene fusion detection, include = T, echo = T, eval = F}
+#!/bin/bash
+
+FILE_PATH="/xdisk/mpadi/jiawenyang/data/centrosome_loss/rnaseq/trimmed_data"
+FILES=$(find ${FILE_PATH} -name "*_clean.fq.gz" | cut -d "/" -f 9 | cut -d "_" -f 1,2 | sort -u)
+OUT_DIR="/xdisk/mpadi/jiawenyang/data/centrosome_loss/rnaseq/star_fusion"
+STAR_FUSION="/xdisk/mpadi/jiawenyang/bin/starfusion"
+LIB="/xdisk/mpadi/jiawenyang/src/star_fusion/GRCh38_gencode_v37_CTAT_lib_Mar012021.plug-n-play/ctat_genome_lib_build_dir"
+
+for file in $FILES; do
+    id=${FILE_PATH}/${file}
+    if [ ! -f ${OUT_DIR}/${file} ];
+    then
+        echo "Aligning file ${file}:"
+        singularity exec ${STAR_FUSION}/star-fusion.v1.12.0.simg \
+        STAR-Fusion --left_fq ${FILE_PATH}/${file}_1_clean.fq.gz \
+                 --right_fq ${FILE_PATH}/${file}_2_clean.fq.gz \
+                 --genome_lib_dir ${LIB} \
+                 --output_dir ${OUT_DIR}/${file}
+    fi
+done
+echo "done"
+```
+
+```{r import centrosome loss gene fusion result, include = T, echo = T, eval = T}
+fusion_prediction_files<-list.files(path = "/xdisk/mpadi/jiawenyang/data/centrosome_loss/rnaseq/star_fusion",
+                                    pattern = ".fusion_predictions.tsv",
+                                    recursive = T,
+                                    full.names = T)
+
+star_fusion_centrosome_loss_samples<-list()
+for (i in 1:length(fusion_prediction_files)){
+  id<-strsplit(fusion_prediction_files[i], "/")[[1]][9]
+  fusion.prediction<-read.delim(file = fusion_prediction_files[i])
+  star_fusion_centrosome_loss_samples[[id]]<-fusion.prediction
+}
+```
+
+```{r summary the fusion gene from all samples, eval = T, include = T, echo = T, warning = F, message = F}
+library(UpSetR)
+library(dplyr)
+library(ComplexHeatmap)
+all_fusions<-Reduce(full_join, star_fusion_centrosome_loss_samples)
+all_FusionName<-all_fusions$X.FusionName
+all_FusionName<-all_FusionName[!duplicated(all_FusionName)]
+```
+
+## Summarizing gene fusion events from all available samples
+
+```{r summarized table, include = T, echo = T, eval = T}
+samples<-names(star_fusion_centrosome_loss_samples)
+fusion.df<-data.frame(gene_fusion = all_FusionName)
+for (i in 1:length(samples)){
+  fusion.df[, c(samples[i])]<-rep(0, nrow(fusion.df))
+  fusion.df[all_FusionName %in% star_fusion_centrosome_loss_samples[[samples[i]]][,"X.FusionName"], samples[i]] <- 1
+}
+rownames(fusion.df)<-fusion.df$gene_fusion
+fusion.df<-fusion.df[,2:16]
+fusion.df1<-as.data.frame(t(fusion.df))
+
+DT::datatable(fusion.df)
+```
+## Visualizing gene fusion events 
+
+```{r Upset plot, fig.width = 10, fig.height=8, include = T, echo = T, eval = T}
+star_fusion_centrosome_loss_samples<-list()
+for (i in 1:length(fusion_prediction_files)){
+  id<-strsplit(fusion_prediction_files[i], "/")[[1]][9]
+  fusion.prediction<-read.delim(file = fusion_prediction_files[i])
+  fusion.prediction<-fusion.prediction$X.FusionName
+  star_fusion_centrosome_loss_samples[[id]]<-fusion.prediction
+}
+m = make_comb_mat(star_fusion_centrosome_loss_samples)
+UpSet(m, set_order = names(star_fusion_centrosome_loss_samples))
+```
+
+## Displaying modified upset plot for gene fusion events
+
+```{r upset plot, echo = FALSE, fig.cap = "Translocation events in Transient centrosome loss samples", out.width= "100%", include = T, echo = T, eval = T}
+knitr::include_graphics("/xdisk/mpadi/jiawenyang/result/centrosome_loss/star-fusion/s.figure10.png")
+```
+<a href="#top3" class="back-to-top">Back to top</a>
+
+**_[back to home](/centrosome_loss_and_PCa/index.html)_**
+

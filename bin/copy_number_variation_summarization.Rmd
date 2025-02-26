@@ -1,0 +1,1073 @@
+---
+title: "Characterizing copy number (CN) signatures of transient centrosome-loss cells and their predictive value "
+date: "`r Sys.Date()`"
+output:  rmdformats::material
+---
+<style type="text/css">
+
+body{ /* Normal  */
+      font-size: 12px;
+  }
+td {  /* Table  */
+  font-size: 12px;
+}
+h1.title {
+  font-size: 25px;
+  color: White;
+  font-family:"Arial";
+}
+h1 { /* Header 1 */
+  font-size: 24px;
+  color: DarkBlue;
+  font-family:"Arial";
+}
+h2 { /* Header 2 */
+    font-size: 22px;
+  color: DarkBlue;
+  font-family:"Arial";
+}
+h3 { /* Header 3 */
+  font-size: 20px;
+  font-family: "Times New Roman", Times, serif;
+  color: DarkBlue;
+}
+code.r{ /* Code block */
+    font-size: 12px;
+}
+pre { /* Code block - determines code spacing between lines */
+    font-size: 12px;
+}
+</style>
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = F, message = F)
+```
+
+```{r clean environment-, include=FALSE, echo=FALSE, warning = F, message = F}
+rm(list = ls())
+gc()
+```
+
+```{r library, include = TRUE, echo = TRUE, message = FALSE, warning = FALSE}
+library(sigminer)
+library(NMF)
+library(ggplot2)
+library(ggpubr)
+library(tidyverse)
+library(survival)
+library(ggpubr)
+library(survminer)
+library(rstatix)
+library(ezcox)
+library(SummarizedExperiment)
+library(TCGAbiolinks)
+library(maftools)
+```
+
+# Extracting CNV signatures from PCa samples and transient centrosome loss cells
+
+<div id="top1"></div>
+
+**_[back to home](/centrosome_loss_and_PCa/index.html)_**
+
+## Analyses based on Sequenza CNV data
+
+### Importing Sequenza output of PCa samples from Sigminer paper 
+
+```{r SEQUENZA CNV data from sigminer, include=TRUE, echo = TRUE, warning = F, message = F, eval = F}
+library(GenomicRanges)
+ncore = 1
+sigminer_prad_sequenza<-read_copynumber(input ="/xdisk/mpadi/jiawenyang/data/centrosome_loss/sigminer/PC_CNA_signature/data/CNV_from_sequenza.tsv",
+                              genome_build = "hg38",
+                              complement = FALSE,
+                              verbose = T)
+sigminer_prad_sequenza.tally.W<-sig_tally(sigminer_prad_sequenza, method = "W", core = ncore, feature_setting = CN.features)
+CNV_sequenza_sigminer_prad_matrix<-sigminer_prad_sequenza.tally.W$nmf_matrix
+```
+
+### Importing Sequenza output of transient centrosome-loss samples
+
+```{r SEQUENZA CNV data from centrosome loss samples, include = TRUE, echo = TRUE, eval = F}
+data_sequenza<-c("/xdisk/mpadi/jiawenyang/result/centrosome_loss/sequenza_gc1000/graph/")
+FILES_sequenza<-list.files(path = data_sequenza,
+                  pattern = "*.segments.txt$",
+                  recursive = T,
+                  full.names = T)
+
+cnv_centrosome_loss_sequenza<-data.frame()
+for (i in 1:length(FILES_sequenza)){
+ file_df = read.table(FILES_sequenza[i], header = T)
+ sample_id<-substr(strsplit(strsplit(FILES_sequenza[i], "/")[[1]][10], "[.]")[[1]][1], 1, nchar(strsplit(strsplit(FILES_sequenza[i], "/")[[1]][10], "[.]")[[1]][1]) - 9)
+ file_df[,"sample"]<-rep(sample_id,nrow(file_df))
+ cnv_centrosome_loss_sequenza<-rbind(cnv_centrosome_loss_sequenza, file_df)
+}
+colnames(cnv_centrosome_loss_sequenza)[1]<-"chrom"
+cnv_centrosome_loss_sequenza<-cnv_centrosome_loss_sequenza[,c("chrom", "start.pos", "end.pos", "CNt", "A", "B", "sample")]
+
+
+centrosome_loss_sequenza_cnv<-readRDS("/xdisk/mpadi/jiawenyang/data/centrosome_loss/wgs/processed/cnv_centrosome_loss_sequenza.rds")
+cnv_sequenza_cl_Sigminer<-centrosome_loss_sequenza_cnv[, c(1,2,3,5,7)]
+colnames(cnv_sequenza_cl_Sigminer)<-colnames(sigminer_prad_sequenza)
+```
+
+```{r include only centrosome loss cell WGS data from SEQUENZA for Sigminer}
+cnv_sequenza_cl_Sigminer<-read.table(file = "/xdisk/mpadi/jiawenyang/data/centrosome_loss/wgs/processed/cnv_sequenza_cl_Sigminer.tsv")
+cnv_sequenza_cl_Sigminer_cells<-cnv_sequenza_cl_Sigminer[cnv_sequenza_cl_Sigminer$sample %in% c("CN_1_1_CKDN200002992-1A_H57L2DSXY_L1", "CN_6_1_CKDN200002994-1A_H57L2DSXY_L1", "CN_9_1_CKDN200002996-1A_H57L2DSXY_L1"),]
+```
+
+### Extracting transient centrosome-loss samples CN signature matrix for NMF from Sequenza data - sigminer
+```{r Extract cn from cl cells -SEQUENZA by sigminer, include=TRUE, echo = TRUE, eval = F, warning = F, message = F}
+ncore = 1
+CNV.sequenza_cl_cells<-read_copynumber(input = "/xdisk/mpadi/jiawenyang/data/centrosome_loss/wgs/processed/cnv_sequenza_cl_Sigminer_cells.tsv",
+                                 genome_build = "hg38",
+                                 complement = FALSE,
+                                 verbose = T
+                                 )
+CNV.sequenza_cl.tally.W_cells<-sig_tally(CNV.sequenza_cl_cells, method = "W", core = ncore, feature_setting = CN.features)
+CNV_sequenza_sigminer_matrix_cells<-CNV.sequenza_cl.tally.W_cells$nmf_matrix
+```
+
+```{r signature estimation from Squenza centrosome loss samples, eval = F, echo = F, include = F}
+combine_sequenza_nmf_matrix<-rbind(CNV_sequenza_sigminer_prad_matrix, CNV_sequenza_sigminer_matrix_cells)
+
+EST.CNV.sequenza_cl_cells_and_patients.W.all <- sig_estimate(combine_sequenza_nmf_matrix,
+  range = 2:12, nrun = 50, cores = ncores, use_random = TRUE,
+  save_plots = FALSE,
+  verbose = TRUE
+)
+```
+
+```{r CNV.facets cl cells and prad patients estimated signatures from sequenza, include = T, echo = T}
+combine_sequenza_nmf_matrix<-readRDS("/xdisk/mpadi/jiawenyang/result/centrosome_loss/sigminer/combine_sequenza_centrosome_loss_cells_nmf_matrix.RDS")
+load("/xdisk/mpadi/jiawenyang/result/centrosome_loss/sigminer/EST.CNV.sequenza_cl_cells_and_patients.W.all.Rdata")
+p_CNV.sequenza_cl_cell_and_PRAD_patients<-show_sig_number_survey(EST.CNV.sequenza_cl_cells_and_patients.W.all, right_y = NULL)
+
+p_CNV.sequenza_cl_cell_and_PRAD_patients
+```
+
+```{r cluster samples in 3 signatures for Sequenza, eval = F, include = T, echo = T, warning = F, message=FALSE}
+ncores = 1
+Sig.CNV.seqz_cl_cells_prad_patients <- sig_extract(combine_sequenza_nmf_matrix, n_sig = 3, nrun = 50, cores = ncores)
+Sig.CNV.seqz_cl_cells_prad_patients_3_sig_groups<-get_groups(Sig.CNV.seqz_cl_cells_prad_patients)
+Sig.CNV.seqz_cl_cells_prad_patients_3_sig_groups
+```
+
+```{r import sequenza-sigminer results, fig.width = 10, fig.height = 8}
+Sig.CNV.seqz_cl_cells_prad_patients<-readRDS(file ="/xdisk/mpadi/jiawenyang/result/centrosome_loss/sigminer/Sig.CNV.seqz_cl_cells_prad_patients_3_sig_groups.RDS")
+
+p_CNV.seqz_cl_cells_prad_patients_3_sig_groups<-show_sig_profile(Sig.CNV.seqz_cl_cells_prad_patients,
+                 mode = "copynumber",
+                 style = "cosmic", method = "W", normalize = "feature")
+
+p_CNV.seqz_cl_cells_prad_patients_3_sig_groups
+
+Sig.CNV.seqz_cl_cells_prad_patients_3_sig_groups<-get_groups(Sig.CNV.seqz_cl_cells_prad_patients)
+
+seqz_sig1_samples<-Sig.CNV.seqz_cl_cells_prad_patients_3_sig_groups[Sig.CNV.seqz_cl_cells_prad_patients_3_sig_groups$enrich_sig == "Sig1",]
+#nrow(seqz_sig1_samples) 115
+seqz_sig2_samples<-Sig.CNV.seqz_cl_cells_prad_patients_3_sig_groups[Sig.CNV.seqz_cl_cells_prad_patients_3_sig_groups$enrich_sig == "Sig2",]
+#nrow(seqz_sig2_samples) 587
+seqz_sig3_samples<-Sig.CNV.seqz_cl_cells_prad_patients_3_sig_groups[Sig.CNV.seqz_cl_cells_prad_patients_3_sig_groups$enrich_sig == "Sig3",]
+#nrow(seqz_sig3_samples) 239
+
+Sig.CNV.seqz_cl_cells_prad_patients_3_sig_groups
+```
+### Examining PRAD samples distribution in CN-sigantures
+
+```{r annotate the samples in each signature, include = T, echo = T, message = F, warning = F}
+Sig.CNV.seqz_cl_cells_prad_patients_3_sig_groups<-readRDS(file ="/xdisk/mpadi/jiawenyang/result/centrosome_loss/sigminer/Sig.CNV.seqz_cl_cells_prad_patients_3_sig_groups.RDS")
+
+
+clinical_info<-readRDS(file = "/xdisk/mpadi/jiawenyang/data/centrosome_loss/sigminer/PC_CNA_signature/data/PRAD_CLINICAL.rds")
+
+Sig.CNV.seqz_cl_cells_prad_patients_3_sig_groups<-get_groups(Sig.CNV.seqz_cl_cells_prad_patients_3_sig_groups)
+Sig.CNV.seqz_cl_cells_prad_patients_3_sig_groups[grep("SRR", Sig.CNV.seqz_cl_cells_prad_patients_3_sig_groups$sample), "sample"] <-
+unlist(lapply(Sig.CNV.seqz_cl_cells_prad_patients_3_sig_groups$sample[grep("-SRR", Sig.CNV.seqz_cl_cells_prad_patients_3_sig_groups$sample)], function(x) str_extract(x, "SRR\\w+")))
+
+Sig.CNV.seqz_cl_cells_prad_patients_3_sig_groups[,"tumor_Run"]<-Sig.CNV.seqz_cl_cells_prad_patients_3_sig_groups$sample
+
+Sig.CNV.seqz_cl_cells_prad_patients_with_clinical<-dplyr::left_join(Sig.CNV.seqz_cl_cells_prad_patients_3_sig_groups, clinical_info, by = "tumor_Run")
+
+DT::datatable(Sig.CNV.seqz_cl_cells_prad_patients_with_clinical)
+```
+
+```{r visualize the copy number signature enrichment clinical distribution, include = T, echo = T}
+sample_type_count<-as.data.frame(Sig.CNV.seqz_cl_cells_prad_patients_with_clinical %>% group_by(enrich_sig) %>% dplyr::count(sample_type))
+
+sample_type_count<-na.omit(sample_type_count)
+
+p <- ggplot(data=sample_type_count, 
+            aes(x=factor(enrich_sig, levels = c("Sig1", "Sig2", "Sig3")), 
+                y=n, 
+                fill=sample_type)) +
+    scale_fill_manual(values=c("#ff7768", "#ffd600","grey")) +
+    geom_bar(position = "fill", stat="identity", width = 0.5) +
+    geom_text(aes(label = n), size = 3, hjust = 0.5, vjust = 3, position = "fill") +
+    xlab("Copy number signature enrichment groups") +                 
+    ylab("Percentage of each sample type") +   
+    ggtitle("Sample types within each copy number signature") +
+    theme_bw () +
+    theme(title = element_text(face = "bold"),
+          legend.title = element_text(face = "bold"),
+          legend.text = element_text(face = "bold"),
+          axis.text.x = element_text(face = "bold"),
+          axis.text.y = element_text(face = "bold"),
+          axis.title.x = element_text(face = "bold"),
+          strip.text.x = element_blank(),
+          strip.text.y = element_text(angle = 0, face = "bold", hjust = 0),
+          #strip.background =element_rect(fill="white"),
+          legend.position = "top",
+          panel.spacing = unit(0,'lines'))
+
+p
+
+sample_type_df<-data.frame("Sig1" = c(72, 43), "Sig2" = c(33, 545), "Sig3" = c(185, 50))
+fisher.test(sample_type_df)
+```
+
+### Associating CN-signatures with clinical outcomes -Sequenza
+
+```{r associate signature with clinical data -sequenza, include = T, echo = T}
+surv_df <- readRDS(file = "/xdisk/mpadi/jiawenyang/data/centrosome_loss/sigminer/PC_CNA_signature/data/PRAD_Survival.rds")
+surv_df <- as.data.frame(surv_df)
+surv_df$sample[grep("TCGA",surv_df$sample)]<-paste0(surv_df$sample[grep("TCGA",surv_df$sample)], "-01")
+
+df.CNV.seqz_cl_cells_prad_patients<-as.data.frame(t(Sig.CNV.seqz_cl_cells_prad_patients$Exposure))
+df.CNV.seqz_cl_cells_prad_patients[,"sample"]<-rownames(df.CNV.seqz_cl_cells_prad_patients)
+
+range01 <- function(x, ...) {
+  (x - min(x, ...)) / (max(x, ...) - min(x, ...))
+}
+
+surv_dt <- dplyr::inner_join(surv_df, df.CNV.seqz_cl_cells_prad_patients ,
+                             by = c("sample"))
+
+#dup_ids = which(duplicated(surv_dt$sample))
+# Remove duplicated records if needed
+cols_to_sigs.seqz <- c(paste0("Sig", c(1:3)))
+
+surv_dt = surv_dt %>%
+  dplyr::mutate_at(cols_to_sigs.seqz, ~./10) %>% 
+  dplyr::mutate(OS.time = OS.time / 30.5,
+                PFI.time = PFI.time / 30.5)
+
+p_os = show_forest(surv_dt, 
+                covariates = cols_to_sigs.seqz,
+                time = "OS.time", status = "OS", merge_models = TRUE)
+
+p_pfs = show_forest(surv_dt, 
+                covariates = cols_to_sigs.seqz,
+                time = "PFI.time", status = "PFI", merge_models = TRUE)
+
+p_os
+
+p_pfs
+```
+
+### Performing kaplan-meier survival analysis based on CN-signatures - Sequenza
+
+```{r kaplan-meier curve sequenza results, include = T, echo = T, fig.width = 10, fig.height = 8}
+#Survival analysis (data downloaded from cbioportal) =================
+tcga_clinical_cbioportal<-read.delim("/xdisk/mpadi/jiawenyang/data/centrosome_loss/cbioportal_dataset/prad_tcga_pan_can_atlas_2018/data_clinical_patient.txt", sep = "\t",  stringsAsFactors = F, header = 1)
+
+##Clinical data organization==========================
+tcga_clinical_cbioportal_dat<-tcga_clinical_cbioportal[,c("X.Patient.Identifier","Overall.Survival..Months.","Overall.Survival.Status", "Disease.Free..Months.","Disease.Free.Status")]
+seqz_sig1_patient<-Sig.CNV.seqz_cl_cells_prad_patients_3_sig_groups[Sig.CNV.seqz_cl_cells_prad_patients_3_sig_groups$enrich_sig == "Sig1", ]
+seqz_sig1_patient_tcga<-seqz_sig1_patient$sample[grep("TCGA", seqz_sig1_patient$sample)]
+
+seqz_sig2_patient<-Sig.CNV.seqz_cl_cells_prad_patients_3_sig_groups[Sig.CNV.seqz_cl_cells_prad_patients_3_sig_groups$enrich_sig == "Sig2", ]
+seqz_sig2_patient_tcga<-seqz_sig2_patient$sample[grep("TCGA", seqz_sig2_patient$sample)]
+
+seqz_sig3_patient<-Sig.CNV.seqz_cl_cells_prad_patients_3_sig_groups[Sig.CNV.seqz_cl_cells_prad_patients_3_sig_groups$enrich_sig == "Sig3", ]
+seqz_sig3_patient_tcga<-seqz_sig3_patient$sample[grep("TCGA", seqz_sig3_patient$sample)]
+
+sig1_patient<-gsub("-01", "", seqz_sig1_patient_tcga)
+sig2_patient<-gsub("-01", "", seqz_sig2_patient_tcga)
+sig3_patient<-gsub("-01", "", seqz_sig3_patient_tcga)
+
+sig1_patient_clinical_data<-tcga_clinical_cbioportal_dat[tcga_clinical_cbioportal_dat$X.Patient.Identifier %in% sig1_patient, ]
+
+sig2_patient_clinical_data<-tcga_clinical_cbioportal_dat[tcga_clinical_cbioportal_dat$X.Patient.Identifier %in% sig2_patient, ]
+
+sig3_patient_clinical_data<-tcga_clinical_cbioportal_dat[tcga_clinical_cbioportal_dat$X.Patient.Identifier %in% sig3_patient, ]
+
+sig1_patient_clinical_data$overall_status<-unlist(lapply(sig1_patient_clinical_data$Overall.Survival.Status, function(x) strsplit(x, ":")[[1]][1]))
+sig1_patient_clinical_data$group_status<-rep(0, nrow(sig1_patient_clinical_data))
+sig2_patient_clinical_data$overall_status<-unlist(lapply(sig2_patient_clinical_data$Overall.Survival.Status, function(x) strsplit(x, ":")[[1]][1]))
+sig2_patient_clinical_data$group_status<-rep(1, nrow(sig2_patient_clinical_data))
+sig3_patient_clinical_data$overall_status<-unlist(lapply(sig3_patient_clinical_data$Overall.Survival.Status, function(x) strsplit(x, ":")[[1]][1]))
+sig3_patient_clinical_data$group_status<-rep(2, nrow(sig3_patient_clinical_data))
+clinical_dat_for_survival_curve<-rbind(sig1_patient_clinical_data, sig2_patient_clinical_data, sig3_patient_clinical_data)
+
+##overall_survival==============================
+tcga_overall<-clinical_dat_for_survival_curve[,c("X.Patient.Identifier","Overall.Survival..Months.","overall_status","group_status")]
+tcga_overall$Overall.Survival..Months.<-as.numeric(tcga_overall$Overall.Survival..Months.)
+tcga_overall$overall_status<-as.numeric(tcga_overall$overall_status)
+
+#Disease_free_survival=========================
+tcga_diseasefree<-clinical_dat_for_survival_curve[which(clinical_dat_for_survival_curve$Disease.Free..Months.!=""), ]
+tcga_diseasefree$diseasefree_status<-unlist(lapply(tcga_diseasefree$Disease.Free.Status, function(x) strsplit(x, ":")[[1]][1]))
+tcga_diseasefree<-tcga_diseasefree[,c("X.Patient.Identifier","Disease.Free..Months.","diseasefree_status","group_status")]
+tcga_diseasefree$Disease.Free..Months.<-as.numeric(tcga_diseasefree$Disease.Free..Months.)
+tcga_diseasefree$diseasefree_status<-as.numeric(tcga_diseasefree$diseasefree_status)
+
+#Kaplan-meier curve generation========================
+overall_S<-Surv(tcga_overall$Overall.Survival..Months., tcga_overall$overall_status)
+overall_Sfit<-survfit(Surv(Overall.Survival..Months., overall_status)~group_status, data = tcga_overall)
+
+tcga_prad_overall<-ggsurvplot(overall_Sfit, 
+                              conf.int = F, 
+                              pval = T, 
+                              risk.table = T, 
+                              legend.labs = c("CN-sig1", "CN-sig2", "CN-sig3"),
+                              legend.title = "Copy number signature",
+                              xlab = "Time (month)",
+                              title = "Kaplan-Meier Curve for TCGA Prostate cancer patients \n -Overall survival",
+                              palette = c("#050506", "#DE8B36", "#CD4224"),
+                              font.tickslab = c(15),
+                              risk.table.height = .15)
+tcga_prad_overall
+
+diseasefree_Sfit<-survfit(Surv(Disease.Free..Months., diseasefree_status)~group_status, data = tcga_diseasefree)
+tcga_prad_diseasefree<-ggsurvplot(diseasefree_Sfit, 
+                                  conf.int = F, 
+                                  pval = T, 
+                                  risk.table = T, 
+                                  legend.labs = c("CN-sig1", "CN-sig2","CN-sig3"),
+                                  legend.title = "Copy number signature",
+                                  xlab = "Time (month)",
+                                  title = "Kaplan-Meier Curve for TCGA Prostate cancer patients \n -Disease-free survival",
+                                  palette = c("#050506", "#DE8B36", "#CD4224"),
+                                  font.tickslab = c(15),
+                                  risk.table.height = .15)
+tcga_prad_diseasefree
+```
+
+### Associating CN-signatures with gleason grade in TCGA PRAD samples - Sequenza
+
+```{r associating CN-signatures with gleason grade in TCGA PRAD samples, fig.width = 10, fig.height = 8}
+# Associate with gleason score ====================================================
+clinical_data<-readRDS("/xdisk/mpadi/jiawenyang/data/centrosome_loss/sigminer/PRAD_CLINICAL.rds")
+clinical_data<-clinical_data[clinical_data$Study == "TCGA",]
+clinical_data<-as.data.frame(clinical_data)
+clinical_dat_df<-clinical_data
+
+#clinical_dat_df$case_submitter_id<-substr(clinical_dat$case_submitter_id, 1, nchar(clinical_dat$case_submitter_id)-4)
+sig1_gleason<-clinical_dat_df[clinical_dat_df$PatientID%in% sig1_patient, ]
+sig1_gleason[,"CN_sig"]<-rep("CN-sig1", nrow(sig1_gleason))
+
+sig2_gleason<-clinical_dat_df[clinical_dat_df$PatientID %in% sig2_patient, ]
+sig2_gleason[,"CN_sig"]<-rep("CN-sig2", nrow(sig2_gleason))
+
+sig3_gleason<-clinical_dat_df[clinical_dat_df$PatientID %in% sig3_patient, ]
+sig3_gleason[,"CN_sig"]<-rep("CN-sig3", nrow(sig3_gleason))
+
+gleason_df<-rbind(sig1_gleason, sig2_gleason, sig3_gleason)
+
+
+# Perform one-way ANOVA
+anova_result<-aov(GleasonScore ~ CN_sig, gleason_df)
+summary(anova_result)
+
+# Perform Tukey's HSD test
+tukey_result <- TukeyHSD(anova_result)
+tukey_result
+
+p<-ggplot(data=gleason_df, aes(x=CN_sig, y=GleasonScore , fill=CN_sig, color = CN_sig)) +
+  theme_light()+#change background
+  geom_violin(alpha = 0.4)+
+  geom_jitter(shape = 16, position = position_jitter(0.2)) +
+  geom_boxplot(width = 0.1, alpha = 0.8)+
+  scale_fill_manual(values=c(`CN-sig1`="#050506",`CN-sig2`="#DE8B36", `CN-sig3`="#CD4224"))+
+  scale_color_manual(values=c(`CN-sig1`="#050506",`CN-sig2`="#DE8B36", `CN-sig3`="#CD4224"))+
+  geom_hline(yintercept = mean(gleason_df$GleasonScore), linetype = 2)+
+  labs(title="Associate Copy number signatures with PCa Gleason Score", x="CN-signatures", y = "gleason score sum of two sites")+
+  theme(plot.title = element_text(size=20), 
+        axis.text.x = element_text(size = 10), axis.text.y = element_text(size = 10), 
+        axis.title.x = element_text(size = 15), axis.title.y = element_text(size = 15),
+        legend.text = element_text(size = 10), legend.title = element_text(size = 15))
+p
+```
+
+### Associate CNV signature with gene fusion events in TCGA PRAD samples - Sequenza
+
+```{r associate CNV signature with gene fusion events in TCGA PRAD samples, echo = T, include = T, warning = F, message = F, fig.width=10, fig.height = 8}
+library(dplyr)
+library(ggpubr)
+library(rstatix)
+library(ezcox)
+
+TCGA_fusion<-read.table("/xdisk/mpadi/jiawenyang/data/centrosome_loss/cbioportal_dataset/prad_tcga_pan_can_atlas_2018/data_fusions.txt", sep = "\t", quote = "", header = T)
+fusion_events<-as.data.frame(table(TCGA_fusion$Tumor_Sample_Barcode))
+colnames(fusion_events)<-c("sample", "Freq")
+
+sig1_patients<-readRDS("/xdisk/mpadi/jiawenyang/result/centrosome_loss/sigminer/clinical_association_table/sequenza_cn_sig1_tcga_samples.rds")
+sig2_patients<-readRDS("/xdisk/mpadi/jiawenyang/result/centrosome_loss/sigminer/clinical_association_table/sequenza_cn_sig2_tcga_samples.rds")
+sig3_patients<-readRDS("/xdisk/mpadi/jiawenyang/result/centrosome_loss/sigminer/clinical_association_table/sequenza_cn_sig3_tcga_samples.rds")
+
+sig_and_patients<-rbind(sig1_patients, sig2_patients, sig3_patients)
+colnames(sig_and_patients)[1]<-"sample"
+fusion_events<-left_join(fusion_events, sig_and_patients, by = "sample")
+fusion_events$enrich_sig<-gsub("Sig", "CN-sig", fusion_events$enrich_sig) 
+
+# Perform one-way ANOVA
+anova_result<-aov(Freq ~ enrich_sig, fusion_events)
+summary(anova_result)
+
+# Perform Tukey's HSD test
+tukey_result <- TukeyHSD(anova_result)
+tukey_result
+
+p<-ggplot(data=fusion_events, aes(x=enrich_sig, y=Freq , fill=enrich_sig, color = enrich_sig)) +
+  theme_light()+#change background
+  geom_violin(alpha = 0.4)+
+  geom_jitter(shape = 16, position = position_jitter(0.2)) +
+  geom_boxplot(width = 0.1, alpha = 0.8)+
+  scale_fill_manual(values=c(`CN-sig1`="#050506",`CN-sig2`="#DE8B36", `CN-sig3`="#CD4224"))+
+  scale_color_manual(values=c(`CN-sig1`="#050506",`CN-sig2`="#DE8B36", `CN-sig3`="#CD4224"))+
+  labs(x="CN-signatures", y = "Number of Fusion Events", title = "Associate Copy Number Signature with fusion events")+
+  theme(plot.title = element_text(size=20), 
+        axis.text.x = element_text(size = 10), axis.text.y = element_text(size = 10), 
+        axis.title.x = element_text(size = 15), axis.title.y = element_text(size = 15),
+        legend.text = element_text(size = 10), legend.title = element_text(size = 15))
+
+p
+```
+
+### Examining CNV burden in each CN-signature - Sequenza
+
+```{r import Sequenza PRAD data, include = T, echo = T, eval = T}
+cnv_cl_Sigminer_sequenza<-read.table("/xdisk/mpadi/jiawenyang/data/centrosome_loss/wgs/processed/cnv_sequenza_cl_Sigminer.tsv", sep = "\t")
+cnv_tumor_Sigminer_sequenza<-read.table(file = "/xdisk/mpadi/jiawenyang/data/centrosome_loss/sigminer/PC_CNA_signature/data/CNV_from_sequenza.tsv", head = T)
+cnv_all_Sigminer_sequenza<-rbind(cnv_cl_Sigminer_sequenza, cnv_tumor_Sigminer_sequenza)
+```
+
+```{r calculate the cnv burden in each samples from Sequenza CNV data, include = T, echo = T, eval = F}
+#To calculate CNAburden for a sample, segments of copy number gains and losses were determined (23), and their total genomic length was summed and calculated as a percentage of the size of the autosomalgenome (exclude chr x and y). 
+
+hg38chrlength<-read.table(file = "/xdisk/mpadi/jiawenyang/data/centrosome_loss/wgs/hg38ChromLength.txt")
+hg38chrlength$V2<-as.numeric(hg38chrlength$V2)
+hg38chrlength$V1<-paste0("chr", hg38chrlength$V1)
+hg38chrlength<-hg38chrlength[!hg38chrlength$V1 %in% c("chrX", "chrY"),]
+
+#for sequenza
+samples<-unique(cnv_all_Sigminer_sequenza$sample)
+chrs<-hg38chrlength$V1
+
+cnv_chr_burden_sequenza<-list()
+cnv_all_burden_sequenza<-data.frame()
+for (i in 7:length(samples)){
+  sample_names<-samples[i]
+  df_ind_sample<-cnv_all_Sigminer_sequenza[cnv_all_Sigminer_sequenza$sample == sample_names, ]
+  df_ind_sample_autosomal<-df_ind_sample[!df_ind_sample$Chromosome %in% c("chrX", "chrY"),]
+  df_ind_sample_autosomal<-df_ind_sample_autosomal[df_ind_sample_autosomal$modal_cn != 2,]
+  df_sample<-data.frame()
+  for (k in 1:length(chrs)) {
+    chromosome<-chrs[k]
+    cnv_region_ind_chr<-df_ind_sample_autosomal[df_ind_sample_autosomal$Chromosome == chromosome,]
+    cnv_region_ind_chr<-na.omit(cnv_region_ind_chr)
+    if (nrow(cnv_region_ind_chr) == 0) {chr_burden <- 0} else {
+    cnv_region_ind_chr_length<-sum(cnv_region_ind_chr$End.bp - cnv_region_ind_chr$Start.bp + 1)
+    chr_burden<-cnv_region_ind_chr_length/hg38chrlength[hg38chrlength$V1 == chromosome, "V2"]}
+    df_ind<-data.frame(sample = sample_names, 
+                       chr = chromosome, 
+                       cnv_region_length = cnv_region_ind_chr_length, 
+                       burden = chr_burden)
+    df_sample<-rbind(df_sample, df_ind)
+    cnv_all_burden<-sum(df_ind$cnv_region_length)/sum(hg38chrlength$V2)
+    cnv_all_burden_df<-data.frame(sample = sample_names, burden = cnv_all_burden)
+  }
+  cnv_chr_burden_sequenza[[sample_names]]<-df_sample
+  cnv_all_burden_sequenza<-rbind(cnv_all_burden_sequenza, cnv_all_burden_df)
+}
+```
+
+```{r find TCGA samples from sequenza cnv burden data, include = T, echo = T, eval = T}
+cnv_all_burden_sequenza<-read.csv("/xdisk/mpadi/jiawenyang/result/centrosome_loss/cnv_burden/cnv_all_burden_sequenza.csv", row.names = 1)
+tcga_cnv_burden<-cnv_all_burden_sequenza[grep("TCGA", cnv_all_burden_sequenza$sample),]
+```
+
+```{r cnv burden data - Sequenza in each CN-signature, include = T, echo = T, eval = T, fig.width = 10, fig.height = 8}
+#import sigminer classification result
+cn_sig1_tcga<-readRDS("/xdisk/mpadi/jiawenyang/result/centrosome_loss/sigminer/clinical_association_table/sequenza_tcga_cn_sig1_tcga_samples.rds")
+cn_sig2_tcga<-readRDS("/xdisk/mpadi/jiawenyang/result/centrosome_loss/sigminer/clinical_association_table/sequenza_tcga_cn_sig2_tcga_samples.rds")
+cn_sig3_tcga<-readRDS("/xdisk/mpadi/jiawenyang/result/centrosome_loss/sigminer/clinical_association_table/sequenza_tcga_cn_sig3_tcga_samples.rds")
+tcga_cnv_burden[tcga_cnv_burden$sample %in% cn_sig1_tcga, "CN_sig"]<-"CN-sig1"
+tcga_cnv_burden[tcga_cnv_burden$sample %in% cn_sig2_tcga, "CN_sig"]<-"CN-sig2"
+tcga_cnv_burden[tcga_cnv_burden$sample %in% cn_sig3_tcga, "CN_sig"]<-"CN-sig3"
+
+
+# Perform one-way ANOVA
+anova_result<-aov(burden ~ CN_sig, tcga_cnv_burden)
+summary(anova_result)
+
+# Perform Tukey's HSD test
+tukey_result <- TukeyHSD(anova_result)
+tukey_result
+
+p<-ggplot(data=tcga_cnv_burden, aes(x=CN_sig, y=burden, fill=CN_sig, color = CN_sig)) +
+  theme_light()+#change background
+  geom_violin(alpha = 0.4)+
+  geom_jitter(shape = 16, position = position_jitter(0.2)) +
+  geom_boxplot(width = 0.1, alpha = 0.8)+
+  scale_fill_manual(values=c(`CN-sig1`="#050506",`CN-sig2`="#DE8B36", `CN-sig3`="#CD4224"))+
+  scale_color_manual(values=c(`CN-sig1`="#050506",`CN-sig2`="#DE8B36", `CN-sig3`="#CD4224"))+
+  labs(title="Associate Copy number signatures with CNV burden", x="Copy number signature", y = "CNV burden \n (Fraction of autosomal genome)")+
+  theme(plot.title = element_text(size=20), 
+        axis.text.x = element_text(size = 10), axis.text.y = element_text(size = 10), 
+        axis.title.x = element_text(size = 15), axis.title.y = element_text(size = 15),
+        legend.text = element_text(size = 10), legend.title = element_text(size = 15))
+p
+```
+
+## Analyses based on FACETS CNV data
+
+### Importing FACETS output of PCa samples from Sigminer paper
+
+```{r load FACETS CNV results from sigminer, eval = F, include=TRUE, echo=TRUE, warning = F, message = F}
+load(file = "/xdisk/mpadi/jiawenyang/data/centrosome_loss/sigminer/PC_CNA_signature/output/CNV.facets.RData")
+sigminer_facets_cnv<-CNV.facets@data
+sigminer_facets_cnv<-as.data.frame(sigminer_facets_cnv)
+colnames(sigminer_facets_cnv)<-c("Chromosome", "Start.bp", "End.bp", "modal_cn", "sample")
+
+ncore = 1
+sigminer_prad_facets<-read_copynumber(input ="/xdisk/mpadi/jiawenyang/data/centrosome_loss/wgs/processed/cnv_facets_sigminer.tsv",
+                              genome_build = "hg38",
+                              complement = FALSE,
+                              verbose = T)
+sigminer_prad_facets.tally.W<-sig_tally(sigminer_prad_facets, method = "W", core = ncore, feature_setting = CN.features)
+CNV_facets_sigminer_prad_matrix<-sigminer_prad_facets.tally.W$nmf_matrix
+```
+
+### Importing FACETS output of transient centrosome-loss samples
+```{r load FACETS CNV results from centrosome loss samples, eval = F, include = T, echo = T, warning = F, message = F}
+columns_cnv_SigMatrixExtractor<-c("chrom", "start", "end", "tcn.em", "lcn.em")
+columns_cnv_Sigminer<-c("chrom", "start", "end", "tcn.em")
+FILES_FACETS_CNV<-list.files(path = "/xdisk/mpadi/jiawenyang/result/centrosome_loss/facets",
+                      pattern = "*.Rdata$",
+                      recursive = T,
+                      full.names = T)
+cnv_all_SigMatrixExtractor<-data.frame()
+cnv_all_Sigminer<-data.frame()
+
+for (i in 1:length(FILES_FACETS_CNV)){
+id<-basename(FILES_FACETS_CNV[i])
+id<-strsplit(id, "[.]")[[1]][1]
+cn<-get(load(FILES_FACETS_CNV[i]))
+cn_SigMatrixExtractor<-cn$cncf[,columns_cnv_SigMatrixExtractor]
+cn_Sigminer<-cn$cncf[,columns_cnv_Sigminer]
+cn_SigMatrixExtractor$chrom<-paste0("chr", cn_SigMatrixExtractor$chrom)
+cn_Sigminer$chrom<-paste0("chr", cn_Sigminer$chrom)
+cn_SigMatrixExtractor[,"sample"]<-rep(id, nrow(cn_SigMatrixExtractor))
+cn_Sigminer[,"sample"]<-rep(id, nrow(cn_Sigminer))
+cnv_all_Sigminer<-rbind(cnv_all_Sigminer, cn_Sigminer)
+cnv_all_SigMatrixExtractor<-rbind(cnv_all_SigMatrixExtractor, cn_SigMatrixExtractor)
+}
+```
+
+```{r include only centrosome loss cell WGS data from FACETS for Sigminer, include = T , echo = T, eval = T}
+cnv_facets_cl_Sigminer<-read.table(file = "/xdisk/mpadi/jiawenyang/data/centrosome_loss/wgs/processed/cnv_facets_cl_Sigminer.tsv")
+cnv_facets_cl_Sigminer_cells<-cnv_facets_cl_Sigminer[cnv_facets_cl_Sigminer$sample %in% c("CN_1_1_CKDN200002992-1A_H57L2DSXY_L1", "CN_6_1_CKDN200002994-1A_H57L2DSXY_L1", "CN_9_1_CKDN200002996-1A_H57L2DSXY_L1"),]
+```
+
+### Extracting transient centrosome-loss samples CN signature matrix for NMF from FACETS data - sigminer
+
+```{r Extract cn from cl-FACETS by sigminer centrosome loss cells, include=TRUE, eval = F, echo = F, warning = F, message = F}
+ncores = 1
+CNV.facets_cl_cells<-read_copynumber(input ="/xdisk/mpadi/jiawenyang/data/centrosome_loss/wgs/processed/cnv_facets_cl_Sigminer_cells.tsv",
+                              genome_build = "hg38",
+                              complement = FALSE,
+                              verbose = T)
+CNV.facets_cl.tally.W_cells<-sig_tally(CNV.facets_cl_cells, method = "W", core = ncores, feature_setting = CN.features)
+CNV_facets_sigminer_cells_matrix<-CNV.facets_cl.tally.W_cells$nmf_matrix
+```
+
+### Classifying transient centrosome-loss samples based on the NMF matrix -Sigminer
+
+```{r signature estimation from FACETS centrosome loss samples, eval = F, echo = F, include = F}
+combine_facets_nmf_matrix<-rbind(CNV_facets_sigminer_prad_matrix, CNV_facets_sigminer_cells_matrix)
+
+EST.CNV.facets_cl_cells_and_patients.W.all <- sig_estimate(combine_facets_nmf_matrix,
+  range = 2:20, nrun = 50, cores = ncores, use_random = TRUE,
+  save_plots = FALSE,
+  verbose = TRUE
+)
+```
+
+```{r CNV.facets cl cells and prad patients estimated signatures from FACETS, include = T, echo = T}  
+load("/xdisk/mpadi/jiawenyang/result/centrosome_loss/sigminer/EST.CNV.facets_cl_cells_and_patients.W.all.Rdata")
+p_CNV.facets_cl_cell_and_PRAD_patients<-show_sig_number_survey(EST.CNV.facets_cl_cells_and_patients.W.all, right_y = NULL)
+
+p_CNV.facets_cl_cell_and_PRAD_patients
+```
+
+```{r cluster samples in 3 signatures for FACETS, eval = F, include = T, echo = T}
+combine_facets_nmf_matrix<-readRDS(file = "/xdisk/mpadi/jiawenyang/result/centrosome_loss/sigminer/combine_facets_centrosome_loss_cells_nmf_matrix")
+
+Sig.CNV.facets_cl_cells_prad_patients <- sig_extract(combine_facets_nmf_matrix, n_sig = 3, nrun = 50, cores = ncores)
+
+Sig.CNV.facets_cl_cells_prad_patients_3_sig<-Sig.CNV.facets_cl_cells_prad_patients
+```
+
+### Visualizing the signature features from FACETS-sigminer
+```{r visualize the signature features from FACETS-sigminer, include = T, echo = T, eval = T, message = F, warning=FALSE, fig.width = 10, fig.height = 8}
+Sig.CNV.facets_cl_cells_prad_patients_3_sig<-readRDS("/xdisk/mpadi/jiawenyang/result/centrosome_loss/sigminer/Sig.CNV.facets_cl_cells_prad_patients_3_sig.RDS")
+Sig.CNV.facets_cl_cells_prad_patients_3_sig_groups<-get_groups(Sig.CNV.facets_cl_cells_prad_patients_3_sig)
+
+p_CNV.facets_cl_cells_prad_patients_3_sig_groups<-show_sig_profile(Sig.CNV.facets_cl_cells_prad_patients_3_sig,
+                 mode = "copynumber",
+                 style = "cosmic", method = "W", normalize = "feature")
+
+print(p_CNV.facets_cl_cells_prad_patients_3_sig_groups)
+
+facets_sig1_samples<-Sig.CNV.facets_cl_cells_prad_patients_3_sig_groups[Sig.CNV.facets_cl_cells_prad_patients_3_sig_groups$enrich_sig == "Sig1",]
+#nrow(facets_sig1_samples) 171 samples
+facets_sig2_samples<-Sig.CNV.facets_cl_cells_prad_patients_3_sig_groups[Sig.CNV.facets_cl_cells_prad_patients_3_sig_groups$enrich_sig == "Sig2",]
+#nrow(facets_sig2_samples) 603 samples
+facets_sig3_samples<-Sig.CNV.facets_cl_cells_prad_patients_3_sig_groups[Sig.CNV.facets_cl_cells_prad_patients_3_sig_groups$enrich_sig == "Sig3",]
+#nrow(facets_sig3_samples) 162 samples
+
+facets_sig3_tcga<-facets_sig3_samples[grep("TCGA",facets_sig3_samples$sample),]
+
+facets_sig2_tcga<-facets_sig2_samples[grep("TCGA", facets_sig2_samples$sample),]
+
+facets_sig1_tcga<-facets_sig1_samples[grep("TCGA", facets_sig1_samples$sample),] 
+```
+
+### Associating CN-signatures with clinical outcomes in TCGA PRAD samples - FACETS
+
+```{r associate signature with clinical data - facets, include = T, echo  = T, eval = T}
+surv_df <- readRDS(file = "/xdisk/mpadi/jiawenyang/data/centrosome_loss/sigminer/PC_CNA_signature/data/PRAD_Survival.rds")
+surv_df <- as.data.frame(surv_df)
+
+df.CNV.facets_cl_cells_prad_patients<-as.data.frame(t(Sig.CNV.facets_cl_cells_prad_patients_3_sig$Exposure))
+df.CNV.facets_cl_cells_prad_patients[,"sample"]<-rownames(df.CNV.facets_cl_cells_prad_patients)
+
+range01 <- function(x, ...) {
+  (x - min(x, ...)) / (max(x, ...) - min(x, ...))
+}
+
+surv_dt <- dplyr::inner_join(surv_df, df.CNV.facets_cl_cells_prad_patients ,
+                             by = c("sample"))
+
+#dup_ids = which(duplicated(surv_df$sample))
+# Remove duplicated records if needed
+cols_to_sigs.facets<- c(paste0("Sig", c(1:3)))
+
+surv_dt = surv_dt %>%
+  dplyr::mutate_at(cols_to_sigs.facets, ~./10) %>% 
+  dplyr::mutate(OS.time = OS.time / 30.5,
+                PFI.time = PFI.time / 30.5)
+
+p_os = show_forest(surv_dt, 
+                covariates = cols_to_sigs.facets,
+                time = "OS.time", status = "OS", merge_models = TRUE)
+
+p_pfs = show_forest(surv_dt, 
+                covariates = cols_to_sigs.facets,
+                time = "PFI.time", status = "PFI", merge_models = TRUE)
+
+p_os
+
+p_pfs
+```
+
+### Performing kaplan-meier survival analysis based on CN-signatures - FACETS
+
+```{r kaplan-merer curve facets results, include = T, echo = T, fig.width = 10, fig.height = 8}
+#Survival analysis (data downloaded from cbioportal) =================
+tcga_clinical_cbioportal<-read.delim("/xdisk/mpadi/jiawenyang/data/centrosome_loss/cbioportal_dataset/prad_tcga_pan_can_atlas_2018/data_clinical_patient.txt", sep = "\t",  stringsAsFactors = F, header = 1)
+
+##Clinical data organization==========================
+tcga_clinical_cbioportal_dat<-tcga_clinical_cbioportal[,c("X.Patient.Identifier","Overall.Survival..Months.","Overall.Survival.Status", "Disease.Free..Months.","Disease.Free.Status")]
+facets_sig1_patient<-Sig.CNV.facets_cl_cells_prad_patients_3_sig_groups[Sig.CNV.facets_cl_cells_prad_patients_3_sig_groups$enrich_sig == "Sig1", ]
+facets_sig1_patient_tcga<-facets_sig1_patient$sample[grep("TCGA", facets_sig1_patient$sample)]
+
+facets_sig2_patient<-Sig.CNV.facets_cl_cells_prad_patients_3_sig_groups[Sig.CNV.facets_cl_cells_prad_patients_3_sig_groups$enrich_sig == "Sig2", ]
+facets_sig2_patient_tcga<-facets_sig2_patient$sample[grep("TCGA", facets_sig2_patient$sample)]
+
+facets_sig3_patient<-Sig.CNV.facets_cl_cells_prad_patients_3_sig_groups[Sig.CNV.facets_cl_cells_prad_patients_3_sig_groups$enrich_sig == "Sig3", ]
+facets_sig3_patient_tcga<-facets_sig3_patient$sample[grep("TCGA", facets_sig3_patient$sample)]
+
+sig1_patient<-facets_sig1_patient_tcga
+sig2_patient<-facets_sig2_patient_tcga
+sig3_patient<-facets_sig3_patient_tcga
+
+sig1_patient_clinical_data<-tcga_clinical_cbioportal_dat[tcga_clinical_cbioportal_dat$X.Patient.Identifier %in% sig1_patient, ]
+sig2_patient_clinical_data<-tcga_clinical_cbioportal_dat[tcga_clinical_cbioportal_dat$X.Patient.Identifier %in% sig2_patient, ]
+sig3_patient_clinical_data<-tcga_clinical_cbioportal_dat[tcga_clinical_cbioportal_dat$X.Patient.Identifier %in% sig3_patient, ]
+
+sig1_patient_clinical_data$overall_status<-unlist(lapply(sig1_patient_clinical_data$Overall.Survival.Status, function(x) strsplit(x, ":")[[1]][1]))
+sig1_patient_clinical_data$group_status<-rep(0, nrow(sig1_patient_clinical_data))
+
+sig2_patient_clinical_data$overall_status<-unlist(lapply(sig2_patient_clinical_data$Overall.Survival.Status, function(x) strsplit(x, ":")[[1]][1]))
+sig2_patient_clinical_data$group_status<-rep(1, nrow(sig2_patient_clinical_data))
+
+sig3_patient_clinical_data$overall_status<-unlist(lapply(sig3_patient_clinical_data$Overall.Survival.Status, function(x) strsplit(x, ":")[[1]][1]))
+sig3_patient_clinical_data$group_status<-rep(2, nrow(sig3_patient_clinical_data))
+
+clinical_dat_for_survival_curve<-rbind(sig1_patient_clinical_data, sig2_patient_clinical_data, sig3_patient_clinical_data)
+
+##overall_survival==============================
+tcga_overall<-clinical_dat_for_survival_curve[,c("X.Patient.Identifier","Overall.Survival..Months.","overall_status","group_status")]
+tcga_overall$Overall.Survival..Months.<-as.numeric(tcga_overall$Overall.Survival..Months.)
+tcga_overall$overall_status<-as.numeric(tcga_overall$overall_status)
+
+#Disease_free_survival=========================
+tcga_diseasefree<-clinical_dat_for_survival_curve[which(clinical_dat_for_survival_curve$Disease.Free..Months.!=""), ]
+tcga_diseasefree$diseasefree_status<-unlist(lapply(tcga_diseasefree$Disease.Free.Status, function(x) strsplit(x, ":")[[1]][1]))
+tcga_diseasefree<-tcga_diseasefree[,c("X.Patient.Identifier","Disease.Free..Months.","diseasefree_status","group_status")]
+tcga_diseasefree$Disease.Free..Months.<-as.numeric(tcga_diseasefree$Disease.Free..Months.)
+tcga_diseasefree$diseasefree_status<-as.numeric(tcga_diseasefree$diseasefree_status)
+
+#Kaplan-meier curve generation========================
+overall_S<-Surv(tcga_overall$Overall.Survival..Months., tcga_overall$overall_status)
+overall_Sfit<-survfit(Surv(Overall.Survival..Months., overall_status)~group_status, data = tcga_overall)
+
+tcga_prad_overall<-ggsurvplot(overall_Sfit, 
+                              conf.int = F, 
+                              pval = T, 
+                              risk.table = T, 
+                              legend.labs = c("CN-sig1", "CN-sig2", "CN-sig3"),
+                              legend.title = "Copy number signature",
+                              xlab = "Time (month)",
+                              title = "Kaplan-Meier Curve for TCGA Prostate cancer patients-Overall survival",
+                              palette = c("#5BC0EB", "#050506", "#6600CC"),
+                              font.tickslab = c(15),
+                              risk.table.height = .15)
+tcga_prad_overall
+
+diseasefree_Sfit<-survfit(Surv(Disease.Free..Months., diseasefree_status)~group_status, data = tcga_diseasefree)
+tcga_prad_diseasefree<-ggsurvplot(diseasefree_Sfit, 
+                                  conf.int = F, 
+                                  pval = T, 
+                                  risk.table = T, 
+                                  legend.labs = c("CN-sig1", "CN-sig2", "CN-sig3"),
+                                  legend.title = "Copy number signature",
+                                  xlab = "Time (month)",
+                                  title = "Kaplan-Meier Curve for TCGA Prostate cancer patients-Disease-free survival",
+                                  palette = c("#5BC0EB", "#050506", "#6600CC"),
+                                  font.tickslab = c(15),
+                                  risk.table.height = .15)
+tcga_prad_diseasefree
+```
+
+### Associating CN-signatures with gleason grade in TCGA PRAD samples - FACETS
+
+```{r Associate CN-signatures with gleason grade in TCGA PRAD samples, include = T, echo = T, eval = T, fig.width = 10, fig.height = 8}
+clinical_data<-readRDS("/xdisk/mpadi/jiawenyang/data/centrosome_loss/sigminer/PRAD_CLINICAL.rds")
+clinical_data<-clinical_data[clinical_data$Study == "TCGA",]
+clinical_data<-as.data.frame(clinical_data)
+clinical_dat_df<-clinical_data
+
+sig1_gleason<-clinical_dat_df[clinical_dat_df$PatientID%in% sig1_patient, ]
+sig1_gleason[,"CN_sig"]<-rep("CN-sig1", nrow(sig1_gleason))
+
+sig2_gleason<-clinical_dat_df[clinical_dat_df$PatientID %in% sig2_patient, ]
+sig2_gleason[,"CN_sig"]<-rep("CN-sig2", nrow(sig2_gleason))
+
+sig3_gleason<-clinical_dat_df[clinical_dat_df$PatientID %in% sig3_patient, ]
+sig3_gleason[,"CN_sig"]<-rep("CN-sig3", nrow(sig3_gleason))
+
+gleason_df<-rbind(sig1_gleason, sig2_gleason, sig3_gleason)
+
+# Perform one-way ANOVA
+anova_result<-aov(GleasonScore ~ CN_sig, gleason_df)
+summary(anova_result)
+
+# Perform Tukey's HSD test
+tukey_result <- TukeyHSD(anova_result)
+tukey_result
+
+
+p<-ggplot(data=gleason_df, aes(x=CN_sig, y=GleasonScore , fill=CN_sig, color = CN_sig)) +
+  theme_light()+#change background
+  geom_violin(alpha = 0.4)+
+  geom_jitter(shape = 16, position = position_jitter(0.2)) +
+  geom_boxplot(width = 0.1, alpha = 0.8)+
+  scale_fill_manual(values=c(`CN-sig1`= "#5BC0EB",`CN-sig2`="#050506", `CN-sig3`="#6600CC"))+
+  scale_color_manual(values=c(`CN-sig1`="#5BC0EB",`CN-sig2`="#050506", `CN-sig3`="#6600CC"))+
+  geom_hline(yintercept = mean(gleason_df$GleasonScore), linetype = 2)+
+  labs(title="Associate Copy number signatures with PCa Gleason Score", x="Copy number signature", y = "gleason score")+
+  theme(plot.title = element_text(size=20), 
+        axis.text.x = element_text(size = 10), axis.text.y = element_text(size = 10), 
+        axis.title.x = element_text(size = 15), axis.title.y = element_text(size = 15),
+        legend.text = element_text(size = 10), legend.title = element_text(size = 15))
+p
+```
+
+### Examining CNV burden in each CN-signature - FACETS
+
+```{r import FACETS CNV outcome for PRAD samples, include = T, echo = T, eval = T}
+cnv_all_Sigminer_facet<-read.table(file = "/xdisk/mpadi/jiawenyang/data/centrosome_loss/wgs/processed/cnv_facets_all.tsv", sep = "\t")
+```
+
+```{r calculate the cnv burden in each samples from facets output, eval = F, include = T, echo = T}
+#To calculate CNAburden for a sample, segments of copy number gains and losses were determined (23), and their total genomic length was summed and calculated as a percentage of the size of the autosomalgenome (exclude chr x and y). 
+cnv_all_Sigminer_facet<-cnv_all_Sigminer_facet[!cnv_all_Sigminer_facet$sample %in% c("CN2_2b_CKDN200005067-1A_H5T7VDSXY_L1", "CN9R1_1_CKDN190048205-1A_HV3TFDSXX_L1", "CN9R1_2_CKDN190048207-1A_HTC3FDSXX_L2", "CN9R2_1_CKDN190048209-1A_HTC3FDSXX_L2", "CN9line2_1_CKDN210017617-1A_H23WLDSX3_L2", "CN9line7_1_CKDN210017619-1A_H23WLDSX3_L2"),]
+
+hg38chrlength<-read.table(file = "/xdisk/mpadi/jiawenyang/data/centrosome_loss/wgs/hg38ChromLength.txt")
+hg38chrlength$V2<-as.numeric(hg38chrlength$V2)
+hg38chrlength$V1<-paste0("chr", hg38chrlength$V1)
+hg38chrlength<-hg38chrlength[!hg38chrlength$V1 %in% c("chrX", "chrY"),]
+
+#for facets
+samples<-unique(cnv_all_Sigminer_facet$sample)
+chrs<-hg38chrlength$V1
+
+cnv_chr_burden_facets<-list()
+cnv_all_burden_facets<-data.frame()
+for (i in 1:length(samples)){
+  sample_names<-samples[i]
+  df_ind_sample<-cnv_all_Sigminer_facet[cnv_all_Sigminer_facet$sample == sample_names, ]
+  df_ind_sample_autosomal<-df_ind_sample[!df_ind_sample$Chromosome %in% c("chrX", "chrY"),]
+  df_ind_sample_autosomal<-df_ind_sample_autosomal[df_ind_sample_autosomal$modal_cn != 2,]
+  #print(sample_names)
+  df_sample<-data.frame()
+  for (k in 1:length(chrs)) {
+    chromosome<-chrs[k]
+    cnv_region_ind_chr<-df_ind_sample_autosomal[df_ind_sample_autosomal$Chromosome == chromosome,]
+    cnv_region_ind_chr<-na.omit(cnv_region_ind_chr)
+    if (nrow(cnv_region_ind_chr) == 0) {chr_burden <- 0} else {
+    cnv_region_ind_chr_length<-sum(cnv_region_ind_chr$End.bp - cnv_region_ind_chr$Start.bp + 1)
+    chr_burden<-cnv_region_ind_chr_length/hg38chrlength[hg38chrlength$V1 == chromosome, "V2"]}
+    df_ind<-data.frame(sample = sample_names, 
+                       chr = chromosome, 
+                       cnv_region_length = cnv_region_ind_chr_length, 
+                       burden = chr_burden)
+    df_sample<-rbind(df_sample, df_ind)
+    cnv_all_burden<-sum(df_ind$cnv_region_length)/sum(hg38chrlength$V2)
+    cnv_all_burden_df<-data.frame(sample = sample_names, burden = cnv_all_burden)
+  }
+  cnv_chr_burden_facets[[sample_names]]<-df_sample
+  cnv_all_burden_facets<-rbind(cnv_all_burden_facets, cnv_all_burden_df)
+}
+```
+
+```{r find TCGA samples from facet cnv burden data }
+cnv_all_burden_facets<-read.csv("/xdisk/mpadi/jiawenyang/result/centrosome_loss/cnv_burden/cnv_all_burden_facets.csv", row.names = 1)
+tcga_cnv_burden_facets<-cnv_all_burden_facets[grep("TCGA", cnv_all_burden_facets$sample),]
+```
+
+```{r cnv burden data in cn signatures FACETS, include = T, echo = T, eval = T, fig.width=10, fig.height=8}
+#import sigminer classification result
+facets_cn_sig1_tcga<-readRDS("/xdisk/mpadi/jiawenyang/result/centrosome_loss/sigminer/clinical_association_table/facets_tcga_cn_sig1_samples.rds")
+facets_cn_sig2_tcga<-readRDS("/xdisk/mpadi/jiawenyang/result/centrosome_loss/sigminer/clinical_association_table/facets_tcga_cn_sig2_samples.rds")
+facets_cn_sig3_tcga<-readRDS("/xdisk/mpadi/jiawenyang/result/centrosome_loss/sigminer/clinical_association_table/facets_tcga_cn_sig3_samples.rds")
+
+tcga_cnv_burden_facets[tcga_cnv_burden_facets$sample %in% facets_cn_sig1_tcga, "CN_sig"]<-"CN-sig1"
+tcga_cnv_burden_facets[tcga_cnv_burden_facets$sample %in% facets_cn_sig2_tcga, "CN_sig"]<-"CN-sig2"
+tcga_cnv_burden_facets[tcga_cnv_burden_facets$sample %in% facets_cn_sig3_tcga, "CN_sig"]<-"CN-sig3"
+
+# Perform one-way ANOVA
+anova_result<-aov(burden ~ CN_sig, tcga_cnv_burden_facets)
+summary(anova_result)
+
+# Perform Tukey's HSD test
+tukey_result <- TukeyHSD(anova_result)
+tukey_result
+
+p<-ggplot(data=tcga_cnv_burden_facets, aes(x=CN_sig, y=burden, fill=CN_sig, color=CN_sig)) +
+  theme_light()+#change background
+  geom_violin(alpha = 0.4)+
+  geom_jitter(shape = 16, position = position_jitter(0.2)) +
+  geom_boxplot(width = 0.1, alpha = 0.8)+
+  scale_fill_manual(values=c(`CN-sig1`="#5A7ECB",`CN-sig2`="#5BC0EB", `CN-sig3`="#6600CC"))+
+  scale_color_manual(values=c(`CN-sig1`="#5A7ECB",`CN-sig2`="#5BC0EB", `CN-sig3`="#6600CC"))+
+  labs(title="Associate Copy number signatures with CNV burden", x="Copy number signature", y = "CNV burden \n (Fraction of autosomal genome)")+
+  theme(plot.title = element_text(size=20), 
+        axis.text.x = element_text(size = 10), axis.text.y = element_text(size = 10), 
+        axis.title.x = element_text(size = 15), axis.title.y = element_text(size = 15),
+        legend.text = element_text(size = 10), legend.title = element_text(size = 15))
+p
+```
+<a href="#top1" class="back-to-top">Back to top</a>
+
+# Performing GISTIC 2.0 analysis on TCGA PRAD samples with 3 CN-signatures
+
+<div id="top2"></div>
+
+**_[back to home](/centrosome_loss_and_PCa/index.html)_**
+
+## Generating input files for GISTIC 2.0 on genepattern
+
+```{r query data, include = T, echo = T, eval = F}
+query<-GDCquery(project = "TCGA-PRAD",
+                data.category = "Copy Number Variation",
+                data.type = "Masked Copy Number Segment")
+GDCdownload(query, method = "api")
+PRAD_CNV_download<-GDCprepare(query = query, save = T, save.filename = "PRAD_CNV_download.rda")
+```
+
+```{r data processing, include = T, echo = T, eval = F}
+A = load("/xdisk/mpadi/jiawenyang/bin/gistic2.0/PRAD_CNV_download.rda")
+tumorCNV<-eval(parse(text = A))
+
+tumorCNV = tumorCNV[,2:7]
+tumorCNV = tumorCNV[, c("Sample", "Chromosome", "Start", "End", "Num_Probes", "Segment_Mean")]
+
+#Find 01A
+tumorCNV[,"type"]<-unlist(lapply(tumorCNV$Sample, function(x) strsplit(x, "-")[[1]][4]))
+tumorCNV = tumorCNV[tumorCNV$type == "01A",]
+tumorCNV = tumorCNV[, 1:6]
+```
+
+```{r marker file downloading, include = T, echo = T, eval = F}
+marker<-read.table("/xdisk/mpadi/jiawenyang/src/gistic/snp6.na35.remap.hg38.subset.txt", header = T)
+marker = marker[marker$freqcnv == "FALSE",]
+marker = marker[ ,c(1:3)]
+colnames(marker) = c("Marker Name", "Chromosome", "Marker Position")
+```
+
+```{r generate input for GISTIC2.0, include = T, echo = T, eval = F}
+tumorCNV[,"TCGA_ID"]<-unlist(lapply(tumorCNV$Sample, function(x) substr(x, 1, 12)))
+sequenza_cn_signature<-read.delim2("/xdisk/mpadi/jiawenyang/result/centrosome_loss/sigminer/clinical_association_table/sequenz_clinical_dat_for_survival.csv", sep = ",", row.names = 2)
+CN_sig1_seg<-tumorCNV[tumorCNV$TCGA_ID %in% rownames(sequenza_cn_signature[sequenza_cn_signature$group_status == "0",]), ]
+CN_sig1_seg = CN_sig1_seg[,1:6]
+CN_sig2_seg<-tumorCNV[tumorCNV$TCGA_ID %in% rownames(sequenza_cn_signature[sequenza_cn_signature$group_status == "1",]), ]
+CN_sig2_seg = CN_sig2_seg[,1:6]
+CN_sig3_seg<-tumorCNV[tumorCNV$TCGA_ID %in% rownames(sequenza_cn_signature[sequenza_cn_signature$group_status == "2",]), ]
+CN_sig3_seg = CN_sig3_seg[,1:6]
+```
+
+## Importing GISTIC 2.0 results for three different signatures of samples and for all TCGA-PRAD samples
+
+```{r import the TCGA GISTIC result back and visualize it with maftools, include = T, echo = T, message = F, warning = F}
+prad.gistic.cn_sig3<-readGistic(gisticAllLesionsFile = "/xdisk/mpadi/jiawenyang/result/centrosome_loss/GISTIC2.0/seqz_CN_sig3_TCGA/all_lesions.conf_90.txt",
+                                gisticAmpGenesFile =  "/xdisk/mpadi/jiawenyang/result/centrosome_loss/GISTIC2.0/seqz_CN_sig3_TCGA/amp_genes.conf_90.txt",
+                                gisticDelGenesFile = "/xdisk/mpadi/jiawenyang/result/centrosome_loss/GISTIC2.0/seqz_CN_sig3_TCGA/del_genes.conf_90.txt",
+                                gisticScoresFile = "/xdisk/mpadi/jiawenyang/result/centrosome_loss/GISTIC2.0/seqz_CN_sig3_TCGA/scores.gistic",
+                                isTCGA = T
+                                  )
+
+prad.gistic.cn_sig2<-readGistic(gisticAllLesionsFile = "/xdisk/mpadi/jiawenyang/result/centrosome_loss/GISTIC2.0/seqz_CN_sig2_TCGA/all_lesions.conf_90.txt",
+                                gisticAmpGenesFile =  "/xdisk/mpadi/jiawenyang/result/centrosome_loss/GISTIC2.0/seqz_CN_sig2_TCGA/amp_genes.conf_90.txt",
+                                gisticDelGenesFile = "/xdisk/mpadi/jiawenyang/result/centrosome_loss/GISTIC2.0/seqz_CN_sig2_TCGA/del_genes.conf_90.txt",
+                                gisticScoresFile = "/xdisk/mpadi/jiawenyang/result/centrosome_loss/GISTIC2.0/seqz_CN_sig2_TCGA/scores.gistic",
+                                isTCGA = T
+                                  )
+
+prad.gistic.cn_sig1<-readGistic(gisticAllLesionsFile = "/xdisk/mpadi/jiawenyang/result/centrosome_loss/GISTIC2.0/seqz_CN_sig1_TCGA/all_lesions.conf_90.txt",
+                                gisticAmpGenesFile =  "/xdisk/mpadi/jiawenyang/result/centrosome_loss/GISTIC2.0/seqz_CN_sig1_TCGA/amp_genes.conf_90.txt",
+                                gisticDelGenesFile = "/xdisk/mpadi/jiawenyang/result/centrosome_loss/GISTIC2.0/seqz_CN_sig1_TCGA/del_genes.conf_90.txt",
+                                gisticScoresFile = "/xdisk/mpadi/jiawenyang/result/centrosome_loss/GISTIC2.0/seqz_CN_sig1_TCGA/scores.gistic",
+                                isTCGA = T
+                                  )
+
+prad.gistic.all<-readGistic(gisticAllLesionsFile = "/xdisk/mpadi/jiawenyang/result/centrosome_loss/GISTIC2.0/TCGA_PRAD/all_lesions.conf_90.txt",
+                            gisticAmpGenesFile = "/xdisk/mpadi/jiawenyang/result/centrosome_loss/GISTIC2.0/TCGA_PRAD/amp_genes.conf_90.txt",
+                            gisticDelGenesFile = "/xdisk/mpadi/jiawenyang/result/centrosome_loss/GISTIC2.0/TCGA_PRAD/del_genes.conf_90.txt",
+                            gisticScoresFile = 
+"/xdisk/mpadi/jiawenyang/result/centrosome_loss/GISTIC2.0/TCGA_PRAD/scores.gistic",
+                            isTCGA = T)
+```
+
+## Visualizing GISTIC 2.0 CNV results in each CN-signature
+
+```{r cytobands from the gistic analyis of TCGA PRAD all samples and TCGA PRAD signature3 samples, include = T, echo = T}
+
+print("TCGA PRAD CN-signature 3 samples")
+gisticChromPlot(gistic = prad.gistic.cn_sig3, ref.build = "hg38", y_lims = c(-1, 1))
+
+print("TCGA PRAD CN-signature 2 samples")
+gisticChromPlot(gistic = prad.gistic.cn_sig2, ref.build = "hg38", y_lims = c(-1, 1))
+
+print("TCGA PRAD CN-signature 1 samples")
+gisticChromPlot(gistic = prad.gistic.cn_sig1, ref.build = "hg38", y_lims = c(-1, 1))
+
+print("TCGA PRAD all samples")
+gisticChromPlot(gistic = prad.gistic.all, ref.build = "hg38", y_lims = c(-1, 1))
+```
+
+## Displaying enriched GISTIC 2.0 focal CNV peaks in CN-signature 3
+
+```{r showing focal regions of the CNV from gistic2.0-cn-sig3, include = T, echo = T, message = F, warning = F}
+library(DT)
+cn3_gistic_cnv_rank<-read.table("/xdisk/mpadi/jiawenyang/result/centrosome_loss/GISTIC2.0/seqz_CN_sig3_TCGA/all_lesions.conf_90.txt", sep = "\t", quote = "", header = T)
+cn3_gistic_cnv_rank<-cn3_gistic_cnv_rank[order(cn3_gistic_cnv_rank$q.values, decreasing = F),]
+cn3_gistic_cnv_rank<-cn3_gistic_cnv_rank[!duplicated(cn3_gistic_cnv_rank$Descriptor),]
+datatable(cn3_gistic_cnv_rank)
+```
+
+## Visualizing overlapped focal CNV regions between CN-signature 3 and transient centrosome-loss xenograft tumors
+
+```{r showing overlapped focal cnv regions between CN-signature 3 and transient centrosome-loss tumors, include = T, echo = T, eval = T, message = F, warning = F}
+
+library(ggbio)
+library(RCircos)
+library(GenomicRanges)
+library(biovizBase)
+
+cn_sig3_cnv_amp<-read.table(file = "/xdisk/mpadi/jiawenyang/result/centrosome_loss/GISTIC2.0/seqz_CN_sig3_TCGA/amp_genes.conf_90.txt", sep = "\t", quote = "", header = T)
+cn_sig3_cnv_del<-read.table(file = "/xdisk/mpadi/jiawenyang/result/centrosome_loss/GISTIC2.0/seqz_CN_sig3_TCGA/del_genes.conf_90.txt", sep = "\t", quote = "", header = T)
+
+cn_sig3_TCGA_regions<-data.frame(seqnames = unlist(c(cn_sig3_cnv_amp[3, 2:ncol(cn_sig3_cnv_amp)], c(cn_sig3_cnv_del[3, 2:ncol(cn_sig3_cnv_del)]))), 
+cytobands = c(colnames(cn_sig3_cnv_amp)[2:ncol(cn_sig3_cnv_amp)],colnames(cn_sig3_cnv_del)[2:ncol(cn_sig3_cnv_del)]),
+cnv_state=c(rep("gain", ncol(cn_sig3_cnv_amp)-1), rep("loss", ncol(cn_sig3_cnv_del)-1)),
+q_value = unlist(c(cn_sig3_cnv_amp[2, c(2:ncol(cn_sig3_cnv_amp))], cn_sig3_cnv_del[2, c(2:ncol(cn_sig3_cnv_del))])))
+cn_sig3_TCGA_regions<-na.omit(cn_sig3_TCGA_regions)
+cn_sig3_TCGA_regions$q_value<-as.numeric(cn_sig3_TCGA_regions$q_value)
+cn_sig3_TCGA_regions<-cn_sig3_TCGA_regions[cn_sig3_TCGA_regions$q_value <= 0.1,] #only include those q-value less than 0.1 (less strick cut-off)
+
+cn_sig3_TCGA_regions<-cn_sig3_TCGA_regions[, c(1:3)]
+cn_sig3_TCGA_regions[, "chromosome"]<-unlist(lapply(cn_sig3_TCGA_regions$seqnames, function(x) strsplit(x, ":")[[1]][1]))
+cn_sig3_TCGA_regions[, "start"]<-unlist(lapply(unlist(lapply(cn_sig3_TCGA_regions$seqnames, function(x) strsplit(x, ":")[[1]][2])), function(x) strsplit(x, "-")[[1]][1]))
+cn_sig3_TCGA_regions[, "end"]<-unlist(lapply(unlist(lapply(cn_sig3_TCGA_regions$seqnames, function(x) strsplit(x, ":")[[1]][2])), function(x) strsplit(x, "-")[[1]][2]))
+cn_sig3_TCGA_regions[, "cytobands"]<-unlist(lapply(cn_sig3_TCGA_regions$cytobands, function(x) substr(x, 2, nchar(x))))
+
+cn_sig3_TCGA_regions<-cn_sig3_TCGA_regions[, c("chromosome", "start", "end", "cytobands", "cnv_state")]
+cn_sig3_TCGA_regions<-makeGRangesFromDataFrame(cn_sig3_TCGA_regions, keep.extra.columns = T)
+
+load("/xdisk/mpadi/jiawenyang/result/centrosome_loss/cnvkit_wgs/xenograft_tumor_consistent_regions_granges.Rdata")
+
+cn_centrosome_loss_regions<-c(olps_gain, olps_loss)
+
+common_loss_region<-findOverlaps(cn_sig3_TCGA_regions[cn_sig3_TCGA_regions$cnv_state == "loss"], cn_centrosome_loss_regions[cn_centrosome_loss_regions$cnv_state == "loss"])
+
+common_gain_region<-findOverlaps(cn_sig3_TCGA_regions[cn_sig3_TCGA_regions$cnv_state == "gain"], cn_centrosome_loss_regions[cn_centrosome_loss_regions$cnv_state == "gain"])
+
+common_cnvs<-c(pintersect(cn_sig3_TCGA_regions[cn_sig3_TCGA_regions$cnv_state == "gain"][queryHits(common_gain_region),], 
+           cn_centrosome_loss_regions[cn_centrosome_loss_regions$cnv_state == "gain"][subjectHits(common_gain_region)]),
+pintersect(cn_sig3_TCGA_regions[cn_sig3_TCGA_regions$cnv_state == "loss"][queryHits(common_loss_region),], 
+           cn_centrosome_loss_regions[cn_centrosome_loss_regions$cnv_state == "loss"][subjectHits(common_loss_region)]))
+common_cnvs<-common_cnvs[!duplicated(common_cnvs$cytobands),]
+seqlengths(common_cnvs)<-seqlengths(ideoCyto$hg19)[names(seqlengths(common_cnvs))]
+
+data("UCSC.HG38.Human.CytoBandIdeogram")
+data(ideoCyto, package = "biovizBase")
+
+colnames(UCSC.HG38.Human.CytoBandIdeogram)<-c("Chromosome", "start", "end", "name", "gieStain")
+cyto.info<-makeGRangesFromDataFrame(UCSC.HG38.Human.CytoBandIdeogram,keep.extra.columns = T)
+
+p= autoplot(cyto.info[seqnames(cyto.info) %in% seqnames(common_cnvs)], layout = "karyogram", cytobands = T )  + 
+    layout_karyogram(data = common_cnvs, aes(color = factor(cnv_state, levels = c("gain", "loss")), fill = cnv_state), size = 0.8, geom = "rect") +
+    labs(colour = "cnv_state") +
+    scale_color_manual(labels = c("gain", "loss"), values = c("orange", "purple")) +
+    scale_fill_manual(labels = c("gneg", "gpos100", "gpos25", "gpos50", "gpos75", "gvar", "stalk", "acen","gain","loss"), values = c(c("#f9f9f9", "#474747", "#cecece", "#a0a0a0", "#737373", "#474747", "#d36c6c", "#8b2323"), alpha(c("#cc0000", "#3399ff"), 0.6)))
+
+print(p)
+
+#Protein coding gene annotation 
+ah <- AnnotationHub::AnnotationHub()
+ahDb <- AnnotationHub::query(ah, pattern = c("Homo sapiens", "EnsDb"))
+ahEdb <- ahDb[["AH109606"]]
+bt.genes<-ensembldb::genes(ahEdb)
+GenomeInfoDb::seqlevelsStyle(bt.genes)<-"UCSC"
+pc.genes<-subset(bt.genes, gene_biotype == "protein_coding")
+
+seqlengths(common_cnvs)<-seqlengths(pc.genes)[names(seqlengths(common_cnvs))]
+
+#Annotate cnv covered genes 
+olpas <- findOverlaps(pc.genes, common_cnvs, ignore.strand=TRUE)
+qh <- S4Vectors::queryHits(olpas)
+sh <- S4Vectors::subjectHits(olpas)
+covered_genes<-pc.genes[qh,"symbol"]
+regions<-common_cnvs[sh,"cytobands"]
+
+df<-cbind(data.frame(covered_genes), data.frame(regions))
+DT::datatable(df[ ,c(1:6, 12)])
+```
+
+<a href="#top2" class="back-to-top">Back to top</a>
+
+**_[back to home](/centrosome_loss_and_PCa/index.html)_**

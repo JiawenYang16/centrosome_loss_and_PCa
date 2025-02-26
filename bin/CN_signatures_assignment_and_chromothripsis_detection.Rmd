@@ -1,0 +1,533 @@
+---
+title: "Copy number signatures assignment and chromothripsis detection in transient centrosome-loss samples"
+date: "`r Sys.Date()`"
+output:  rmdformats::material
+---
+<style type="text/css">
+
+body{ /* Normal  */
+      font-size: 12px;
+  }
+td {  /* Table  */
+  font-size: 12px;
+}
+h1.title {
+  font-size: 25px;
+  color: White;
+  font-family:"Arial";
+}
+h1 { /* Header 1 */
+  font-size: 24px;
+  color: DarkBlue;
+  font-family:"Arial";
+}
+h2 { /* Header 2 */
+    font-size: 22px;
+  color: DarkBlue;
+  font-family:"Arial";
+}
+h3 { /* Header 3 */
+  font-size: 20px;
+  font-family: "Times New Roman", Times, serif;
+  color: DarkBlue;
+}
+code.r{ /* Code block */
+    font-size: 12px;
+}
+pre { /* Code block - determines code spacing between lines */
+    font-size: 12px;
+}
+</style>
+---
+```{r clean environment, include=FALSE, echo=FALSE, warning = F, message = F}
+rm(list = ls())
+gc()
+```
+
+```{r library, include = TRUE, echo = TRUE, message = F, warning = F}
+dyn.load("/opt/ohpc/pub/apps/python/3.8.12/lib/libpython3.8.so.1.0")
+library(reticulate)
+library("SigProfilerMatrixGeneratorR")
+library(NMF)
+library(ggplot2)
+library(ggpubr)
+library(tidyverse)
+library(ezcox)
+library(glmnet)
+library(DT)
+library(ShatterSeek)
+library(GenomicRanges)
+library(StructuralVariantAnnotation)
+library(ReConPlot)
+library(data.table)
+library(dplyr)
+library(ggbio)
+library(ggplot2)
+library(rtracklayer)
+```
+
+# Copy number signature assignment to COSMIC CN-signatures
+
+<div id="top1"></div>
+
+**_[back to home](/centrosome_loss_and_PCa/index.html)_**
+
+## Sequenza CNV data
+
+### Organizing Sequenza data in centrosome loss samples
+
+```{r SEQUENZA CNV data from centrosome loss samples, include = TRUE, echo = TRUE, eval = F}
+data_sequenza<-c("/xdisk/mpadi/jiawenyang/result/centrosome_loss/sequenza_gc1000/graph/")
+FILES_sequenza<-list.files(path = data_sequenza,
+                  pattern = "*.segments.txt$",
+                  recursive = T,
+                  full.names = T)
+
+cnv_centrosome_loss_sequenza<-data.frame()
+for (i in 1:length(FILES_sequenza)){
+ file_df = read.table(FILES_sequenza[i], header = T)
+ sample_id<-substr(strsplit(strsplit(FILES_sequenza[i], "/")[[1]][10], "[.]")[[1]][1], 1, nchar(strsplit(strsplit(FILES_sequenza[i], "/")[[1]][10], "[.]")[[1]][1]) - 9)
+ file_df[,"sample"]<-rep(sample_id,nrow(file_df))
+ cnv_centrosome_loss_sequenza<-rbind(cnv_centrosome_loss_sequenza, file_df)
+}
+colnames(cnv_centrosome_loss_sequenza)[1]<-"chrom"
+cnv_centrosome_loss_sequenza<-cnv_centrosome_loss_sequenza[,c("chrom", "start.pos", "end.pos", "CNt", "A", "B", "sample")]
+
+cnv_sequenza_cl_SigMatrixExtractor<-cnv_centrosome_loss_sequenza
+#write.table(cnv_sequenza_cl_SigMatrixExtractor, file = "/xdisk/mpadi/jiawenyang/data/centrosome_loss/wgs/processed/cnv_sequenza_cl_SigMatrixExtractor.tsv",sep = "\t", quote = F)
+```
+
+### Extract centrosome loss samples CN signature matrix for NMF from Sequenza data - SigMatrixGenerator
+
+```{python CN signature matrix generation for NMF-sequenza, eval = F, include = T, echo = T }
+from SigProfilerMatrixGenerator.scripts import CNVMatrixGenerator as scna
+file_type = "SEQUENZA"
+input_file = "/xdisk/mpadi/jiawenyang/data/centrosome_loss/wgs/processed/cnv_sequenza_cl_SigMatrixExtractor.tsv" 
+output_path = "/xdisk/mpadi/jiawenyang/result/centrosome_loss/SigMatrixGenerator/"
+project = "centrosome_loss_cnv_sequenza"
+scna.generateCNVMatrix(file_type, input_file, project, output_path)
+```
+
+```{r Displaying SigMatrixGenerator results from cl - Sequenza, eval = T, echo = T, include=T}
+CNV_matrix_Sequenza<-read.table("/xdisk/mpadi/jiawenyang/result/centrosome_loss/SigMatrixGenerator/centrosome_loss_cnv_sequenza.CNV48.matrix.tsv", header = T)
+DT::datatable(CNV_matrix_Sequenza)
+```
+
+```{python generate signature plot for centrosome loss samples from Sequenza - SigMatrixExtractor, eval = F, include = T, echo = T}
+import sigProfilerPlotting as sigPlt
+matrix_path = "/xdisk/mpadi/jiawenyang/result/centrosome_loss/SigMatrixGenerator/centrosome_loss_cnv_sequenza.CNV48.matrix.tsv"
+output_path = "/xdisk/mpadi/jiawenyang/result/centrosome_loss/SigMatrixGenerator/"
+project = "centrosome_loss_cnv_sequenza"
+sigPlt.plotCNV(matrix_path, output_path, project, "pdf", percentage=True, aggregate=False)
+```
+
+```{r displaying plots from SigProfiler - Sequenza, out.width='600px', out.height="500px", fig.align="center", eval = T}
+knitr::include_graphics("/xdisk/mpadi/jiawenyang/result/centrosome_loss/SigMatrixGenerator/centrosome_loss_sequenza_CNV48_signatures.pdf")
+```
+
+### Assigning CNV profiles from transient centrosome loss samples to COSMIC CN-signatures
+
+```{python assigning CNV profiles from Sequenza to COSMIC CN profiles, eval = F, include = T, echo = T}
+from SigProfilerMatrixGenerator import install as genInstall
+genInstall.install('GRCh37')
+
+import SigProfilerAssignment as spa
+from SigProfilerAssignment import Analyzer as Analyze
+Analyze.cosmic_fit(samples="/xdisk/mpadi/jiawenyang/data/centrosome_loss/wgs/processed/cnv_sequenza_cl_SigMatrixExtractor.tsv",
+                  output="sequenza_cn_assign_cl_all",
+                  input_type="seg:SEQUENZA",
+                  cosmic_version=3.3,
+                  exome=False,
+                  collapse_to_SBS96=False,
+                  genome_build="GRCh37",
+                  sample_reconstruction_plots="pdf",
+                  make_plots=True,
+                  verbose=True)
+```
+
+```{r import sequenza_SigProfilerAssignment result, include = T, echo = T, eval = T}
+Decomp_matrix<-read.table(file = "/xdisk/mpadi/jiawenyang/result/centrosome_loss/SigProfilerAssignment/sequenza_cn_assign_cl_all/Assignment_Solution/Activities/Decomposed_MutationType_Probabilities.txt", sep = "\t", header = T)
+
+contribution_matrix<-data.frame()
+for (i in 1:length(unique(Decomp_matrix$Sample.Names))){
+  sample<-unique(Decomp_matrix$Sample.Names)[i]
+  Contribution_each_sample<-Decomp_matrix[Decomp_matrix$Sample.Names == sample, c(3:ncol(Decomp_matrix))]
+  contribution_score<-apply(Contribution_each_sample, 2, mean)
+  contribution_score<-as.data.frame(contribution_score)
+  colnames(contribution_score)<-sample
+  contribution_score<-t(contribution_score)
+  contribution_matrix<-rbind(contribution_matrix, contribution_score)
+}
+contribution_matrix<-contribution_matrix[c(1:4, 7:9),]
+DT::datatable(contribution_matrix)
+```
+
+```{r sequenza_SigProfilerMatrix Clutering, include = T, echo = T, fig.width=10, fig.height=8}
+CNV_components_matrix<-read.table(file = "/xdisk/mpadi/jiawenyang/result/centrosome_loss/SigMatrixGenerator/centrosome_loss_cnv_sequenza.CNV48.matrix.tsv", header = T)
+
+CNV_components_matrix<-CNV_components_matrix[, c(2:5,8:10)]
+
+mat<-CNV_components_matrix[, 1:ncol(CNV_components_matrix)]
+
+distance_mat <- dist(t(mat), method = 'euclidean')
+distance_mat
+
+# Fitting Unsupervised Hierarchical clustering Model
+set.seed(240)  # Setting seed
+
+Hierar_cl <- hclust(distance_mat, method = "average")
+Hierar_cl
+
+plot(Hierar_cl)
+```
+
+```{r displaying sequenza_SigProfilerAssignment result, include = T, echo = T, eval = T}
+knitr::include_graphics("/xdisk/mpadi/jiawenyang/result/centrosome_loss/SigProfilerAssignment/COSMIC_CN_sig_assignment.png")
+```
+
+## FACETS CNV data
+
+### Organizing FACETS data in centrosome loss samples
+
+```{r load FACETS CNV results from centrosome loss samples, eval = F, include = T, echo = T, warning = F, message = F}
+
+columns_cnv_SigMatrixExtractor<-c("chrom", "start", "end", "tcn.em", "lcn.em")
+columns_cnv_Sigminer<-c("chrom", "start", "end", "tcn.em")
+FILES_FACETS_CNV<-list.files(path = "/xdisk/mpadi/jiawenyang/result/centrosome_loss/facets",
+                      pattern = "*.Rdata$",
+                      recursive = T,
+                      full.names = T)
+cnv_all_SigMatrixExtractor<-data.frame()
+cnv_all_Sigminer<-data.frame()
+
+for (i in 1:length(FILES_FACETS_CNV)){
+id<-basename(FILES_FACETS_CNV[i])
+id<-strsplit(id, "[.]")[[1]][1]
+cn<-get(load(FILES_FACETS_CNV[i]))
+cn_SigMatrixExtractor<-cn$cncf[,columns_cnv_SigMatrixExtractor]
+cn_Sigminer<-cn$cncf[,columns_cnv_Sigminer]
+cn_SigMatrixExtractor$chrom<-paste0("chr", cn_SigMatrixExtractor$chrom)
+cn_Sigminer$chrom<-paste0("chr", cn_Sigminer$chrom)
+cn_SigMatrixExtractor[,"sample"]<-rep(id, nrow(cn_SigMatrixExtractor))
+cn_Sigminer[,"sample"]<-rep(id, nrow(cn_Sigminer))
+cnv_all_Sigminer<-rbind(cnv_all_Sigminer, cn_Sigminer)
+cnv_all_SigMatrixExtractor<-rbind(cnv_all_SigMatrixExtractor, cn_SigMatrixExtractor)
+}
+#write.table(cnv_all_SigMatrixExtractor, file = "/xdisk/mpadi/jiawenyang/data/centrosome_loss/wgs/processed/cnv_facets_cl_SigMatrixExtractor.tsv", sep = "\t", quote = F)
+```
+
+### Extract centrosome loss samples CN signature matrix for NMF from FACETS data - SigMatrixGenerator
+
+```{python cl cells FACETS generate matrix, eval = F, include = T, echo = T}
+from SigProfilerMatrixGenerator.scripts import CNVMatrixGenerator as scna
+file_type = "FACETS"
+input_file = "/xdisk/mpadi/jiawenyang/data/centrosome_loss/wgs/processed/cnv_facets_cl_SigMatrixExtractor.tsv" 
+output_path = "/xdisk/mpadi/jiawenyang/result/centrosome_loss/SigMatrixGenerator/"
+project = "centrosome_loss_facets"
+scna.generateCNVMatrix(file_type, input_file, project, output_path)
+```
+
+```{r Displaying SigMatrixGenerator results from cl - FACETS}
+CNV_matrix_FACETS<-read.table("/xdisk/mpadi/jiawenyang/result/centrosome_loss/SigMatrixGenerator/centrosome_loss_cnv_facets.CNV48.matrix.tsv", header = T)
+DT::datatable(CNV_matrix_FACETS)
+```
+
+```{python generate signature plot for centrosome loss sample from FACETS-SigMatrixExtractor, eval = F, include = T, echo = T }
+import sigProfilerPlotting as sigPlt
+matrix_path = "/xdisk/mpadi/jiawenyang/result/centrosome_loss/SigMatrixGenerator/centrosome_loss_cnv_facets_cl_cells.CNV48.matrix.tsv"
+output_path = "/xdisk/mpadi/jiawenyang/result/centrosome_loss/SigMatrixGenerator/"
+project = "centrosome_loss_cnv_facets_cl_cells"
+sigPlt.plotCNV(matrix_path, output_path, project, "pdf", percentage=True, aggregate=False)
+```
+
+```{r displaying plots from SigProfiler SigMatrixGenerator - FACETS, fig.align="center", eval = T, out.height = "500px", out.width="600px"}
+knitr::include_graphics("/xdisk/mpadi/jiawenyang/result/centrosome_loss/SigMatrixGenerator/centrosome_loss_facets_CNV48_signatures.pdf")
+```
+
+### Assigning CNV profiles from transient centrosome loss samples to COSMIC CN-signatures.
+
+```{python assigning CNV profiles from FACETS to COSMIC CN profiles, eval = F, include = T, echo = T}
+from SigProfilerMatrixGenerator import install as genInstall
+genInstall.install('GRCh37')
+
+import SigProfilerAssignment as spa
+from SigProfilerAssignment import Analyzer as Analyze
+Analyze.cosmic_fit(samples="/xdisk/mpadi/jiawenyang/data/centrosome_loss/wgs/processed/cnv_facets_cl_SigMatrixExtractor.tsv",
+                  output="facets_cn_assign",
+                  input_type="seg:FACETS",
+                  cosmic_version=3.3,
+                  exome=False,
+                  collapse_to_SBS96=False,
+                  genome_build="GRCh37",
+                  sample_reconstruction_plots="pdf",
+                  make_plots=True,
+                  verbose=True)
+```
+
+<a href="#top1" class="back-to-top">Back to top</a>
+
+# Copy number signature assignment to CIN17-signatures
+
+<div id="top2"></div>
+
+**_[back to home](/centrosome_loss_and_PCa/index.html)_**
+
+```{r assigning CIN17 signatures to transient centrosome-loss samples, include = T, echo = T, fig.width=10, fig.height=8}
+
+library(CINSignatureQuantification) #Drews et al. A pan-cancer compendium of chromosomal instability Nature (2022)
+
+#importing data
+cnv_data<-readRDS(file = "/xdisk/mpadi/jiawenyang/data/centrosome_loss/wgs/processed/cnv_centrosome_loss_sequenza.rds")
+chr<-c(paste0("chr", c(1:22, "X", "Y")))
+cl_cnv_data<-cnv_data[, c("chromosome", "start", "end", "copy_number", "sample")]
+cl_cnv_data<-cl_cnv_data[cl_cnv_data$chrom %in% chr,]
+colnames(cl_cnv_data)<-c("chromosome", "start", "end", "segVal", "sample")
+
+#running assignment
+mySigs<-quantifyCNSignatures(cl_cnv_data)
+
+#clustering samples based on CNV components 
+Activity_matrix<-mySigs@featFitting$sampleByComponent
+mat<-Activity_matrix[c(1:4, 7:9),]
+distance_mat <- dist(mat, method = 'euclidean')
+distance_mat
+
+# Fitting Unsupervised Hierarchical clustering Model
+set.seed(240)  # Setting seed
+Hierar_cl <- hclust(distance_mat, method = "average")
+Hierar_cl
+plot(Hierar_cl)
+
+#displaying signature interpreting matrix
+DT::datatable(mySigs@activities$thresholdAct2[c(1:4, 7:9),])
+```
+
+```{r displaying plots from SigProfiler - FACETS, fig.align="center", eval = T, out.height = "500px", out.width="600px"}
+knitr::include_graphics("/xdisk/mpadi/jiawenyang/result/centrosome_loss/CINSig/CIN17_assignment.png")
+```
+
+<a href="#top2" class="back-to-top">Back to top</a>
+
+# Chromothripsis detection
+
+<div id="top3"></div>
+
+**_[back to home](/centrosome_loss_and_PCa/index.html)_**
+
+```{r import sv data from delly, eval = F, include = T, echo = T}
+hg38chrom<-read.table(file = "/xdisk/mpadi/jiawenyang/src/genome_data/hg38ChromLength.txt")
+colnames(hg38chrom)<-c("seqnames", "end")
+hg38chrom[, "start"]<-rep(1, nrow(hg38chrom))
+
+hg38sub<-makeGRangesFromDataFrame(hg38chrom)
+seqlevelsStyle(hg38sub)<-"UCSC"
+
+
+data_delly<-c("/xdisk/mpadi/jiawenyang/result/centrosome_loss/delly")
+FILES_delly<-list.files(path = data_delly,
+                  pattern = "*vcf$",
+                  recursive = T,
+                  full.names = T)
+FILES_delly_cl_cells<-FILES_delly[grep("CN", FILES_delly)]
+
+
+chrs<-paste0("chr", c(1:22, "X"))
+```
+
+## Organizing SV data for further analyses
+
+```{r save DELLY output for centrosome loss all samples, eval = F, include = T, echo = T, warning=FALSE, message=FALSE}
+sv_centrosome_loss_delly<-data.frame()
+for (i in 1:length(FILES_delly)){
+  sample_id<-strsplit(strsplit(FILES_delly[i], "/")[[1]][9], "[.]")[[1]][1]
+  vcf <- VariantAnnotation::readVcf(file = FILES_delly[i])
+  gr <- c(breakpointRanges(vcf), breakendRanges(vcf))
+  gr_df <- as.data.frame(gr)
+  partner_gr <- partner(gr)
+  partner_gr_df <- as.data.frame(partner_gr)
+  sv <- cbind(gr_df, partner_gr_df[, c("seqnames", "start","end", "strand")])
+  sv <- sv[sv$seqnames %in% chrs,]
+  sv<-sv[sv$FILTER == "PASS",]
+  sv<-sv[sv$svLen >= 200,]
+  sv<-sv[sv[,1] %in% chrs,]
+  sv<-sv[sv[,19] %in% chrs,]
+  sv<-sv[, c(1,2,3, 19, 20, 21, 13,5,22)]
+  colnames(sv)<-c("chrom1", "pos1.start", "pos1.end", "chrom2", "pos2.start", "pos2.end", "SVtype", "strand1", "strand2")
+  sv[,"sample"]<-rep(sample_id, nrow(sv))
+  sv_centrosome_loss_delly<-rbind(sv_centrosome_loss_delly, sv)
+  rownames(sv_centrosome_loss_delly)<-NULL
+}
+```
+
+## Organizing CNV data for further analyses
+
+```{r loading sequenza_gc1000 data, eval = F, include=TRUE, echo=TRUE}
+data_sequenza<-c("/xdisk/mpadi/jiawenyang/result/centrosome_loss/sequenza_gc1000/graph/")
+FILES_sequenza<-list.files(path = data_sequenza,
+                  pattern = "*.segments.txt$",
+                  recursive = T,
+                  full.names = T)
+
+cnv_centrosome_loss_sequenza<-data.frame()
+for (i in 1:length(FILES_sequenza)){
+ file_df = read.table(FILES_sequenza[i], header = T)
+ sample_id<-substr(strsplit(strsplit(FILES_sequenza[i], "/")[[1]][10], "[.]")[[1]][1], 1, nchar(strsplit(strsplit(FILES_sequenza[i], "/")[[1]][10], "[.]")[[1]][1]) - 9)
+ file_df[,"sample"]<-rep(sample_id,nrow(file_df))
+ file_df<-file_df[file_df$chromosome %in% chrs, ]
+ file_df<-file_df[, c(1,2,3,7,10,12,14)]
+ colnames(file_df)<-c("chromosome", "start", "end", "log2.ratio", "copy_number","minorAlleleCopyNumber", "sample")
+ cnv_centrosome_loss_sequenza<-rbind(cnv_centrosome_loss_sequenza, file_df)
+}
+```
+
+```{r loading FACETS data, eval = F, include=T, echo=TRUE}
+data_facets<-c("/xdisk/mpadi/jiawenyang/result/centrosome_loss/facets")
+FILES_FACETS_CNV<-list.files(path = data_facets,
+                      pattern = "*.Rdata$",
+                      recursive = T,
+                      full.names = T)
+
+cnv_centrosome_loss_facets<-data.frame()
+for (i in 1:length(FILES_FACETS_CNV)){
+id<-basename(FILES_FACETS_CNV[i])
+id<-strsplit(id, "[.]")[[1]][1]
+cn<-get(load(FILES_FACETS_CNV[i]))
+cnv_centrosome_loss<-cn$cncf
+cnv_centrosome_loss$chrom<-paste0("chr", cnv_centrosome_loss$chrom)
+cnv_centrosome_loss[,"sample"]<-rep(id, nrow(cnv_centrosome_loss))
+cnv_centrosome_loss<-cnv_centrosome_loss[cnv_centrosome_loss$chrom %in% chrs,]
+cnv_centrosome_loss_facets<-rbind(cnv_centrosome_loss_facets, cnv_centrosome_loss)
+}
+```
+
+```{r overlap CNV regions from different methods, eval = F, include=TRUE, echo = TRUE, warning=FALSE, message=FALSE}
+sample_cnv_id<-unique(cnv_centrosome_loss_sequenza$sample)
+sample_cnv_cl_cells<-sample_cnv_id[7:9]
+
+grl_sequenza<-GenomicRanges::makeGRangesListFromDataFrame(cnv_centrosome_loss_sequenza,
+                                                 split.field = "sample",
+                                                 keep.extra.column = T)
+
+grl_facets<-GenomicRanges::makeGRangesListFromDataFrame(cnv_centrosome_loss_facets,
+                                                 split.field = "sample",
+                                                 keep.extra.column = T)
+
+intersected_cnv_cl_cells<-list()
+
+for (i in 1:length(sample_cnv_cl_cells)){
+  id<-sample_cnv_cl_cells[i]
+  sequenza_sub_grl<-grl_sequenza[[id]]
+  facets_sub_grl<-grl_facets[[id]]
+  facets_x_sequenza_olaps<-findOverlaps(sequenza_sub_grl, facets_sub_grl, type = "within", ignore.strand = TRUE)
+  facets_x_sequenza_olaps_qh<-queryHits(facets_x_sequenza_olaps)
+  olaps1<-sequenza_sub_grl[facets_x_sequenza_olaps_qh]
+  intersected_cnv_cl_cells[[id]]<-olaps1
+}
+names(intersected_cnv_cl_cells)<-c("CN_1", "CN_6", "CN_9")
+```
+
+## Chromothripsis detection with SV detected by DELLY and consistent CNV detected by Sequenza and FACETS
+
+```{r detect chromothripsis DELLY with conserved CNVs, eval = FALSE, include=TRUE, echo=TRUE, message=FALSE, warning=FALSE}
+
+#running this interminal to get the results, since this chunk takes long time.
+
+sample_all_id<-c("CN_1", "CN_6", "CN_9")
+
+makeShatterseekSV<-function(sv){
+  SV_data <- SVs(chrom1 = gsub("chr", "", sv$chrom1),
+	pos1 = as.numeric(sv$pos1.start),
+	chrom2 = gsub("chr", "", sv$chrom2),
+	pos2 = as.numeric(sv$pos2.end),
+	SVtype = as.character(sv$SVtype),
+	strand1 = as.character(sv$strand1),
+	strand2 = as.character(sv$strand2))
+  return(SV_data)
+} 
+
+makeShatterseekCNV<-function(cnv){
+  cnv<-cnv[which(cnv$seqnames %in% paste0("chr", c(1:22, "X"))),]
+  CN_data <- CNVsegs(chrom = gsub("chr", "", as.character(cnv$seqnames)),
+	start = as.numeric(cnv$start),
+	end = as.numeric(cnv$end),
+	total_cn = round(2^as.numeric(cnv$log2.ratio), digits=0)
+	)
+  return(CN_data)
+}
+
+shatterseek_chromothripsis_prediction_delly<-list()
+for (i in 1:length(sample_all_id)){
+  sample_id<-sample_all_id[i]
+  SV<-makeShatterseekSV(sv_centrosome_loss_delly[sv_centrosome_loss_delly$sample == sample_all_id[i],])
+  CNV<-makeShatterseekCNV(as.data.frame(intersected_cnv_cl_cells[[sample_all_id[i]]]))
+  shatterseek_chromothripsis_prediction_delly[[sample_id]]<-shatterseek(SV.sample = SV, 
+                                           seg.sample = CNV,
+                                           genome = "hg38")
+}
+shatterseek_chromothripsis_prediction_delly
+```
+
+## Displaying chromothripsis detection result from transient centrosome-loss cell samples
+
+```{r load chromothrepsis prediction result from delly, eval = T, include = T, echo = T}
+
+result_dir<-c("/xdisk/mpadi/jiawenyang/result/centrosome_loss/shatterseek/delly/")
+files<-c("CN_1_1_CKDN200002992-1A_H57L2DSXY_L1_chromothripsis_prediction_delly.rds",
+         "CN_6_1_CKDN200002994-1A_H57L2DSXY_L1_chromothripsis_prediction_delly.rds",
+         "CN_9_1_CKDN200002996-1A_H57L2DSXY_L1_chromothripsis_prediction_delly.rds"
+)
+
+shatterseek_out_cl_cells<-paste0(result_dir, files)
+
+for (i in 1:length(shatterseek_out_cl_cells)) {
+  chromothripsis_result<-readRDS(file = shatterseek_out_cl_cells[i])
+  file_id<-substr(strsplit(shatterseek_out_cl_cells[i], "/")[[1]][9], 1, 4)
+  print(file_id)
+  print(chromothripsis_result@chromSummary)
+}
+```
+## Displaying chromosomes in each sample that potentially have chromothripsis
+
+```{r predict chromothripsis regions based on different confident levels, include = T, echo = T, eval = T}
+for (i in 1:length(shatterseek_out_cl_cells)){
+  id<-substr(basename(shatterseek_out_cl_cells[i]), 1, nchar(basename(shatterseek_out_cl_cells[i]))-66) 
+  df<-readRDS(shatterseek_out_cl_cells[i])
+  df<-df@chromSummary
+  intra.sv<-apply(df[, c(4:8)], 1, sum)
+  segms.os.2s<-df[, 16]
+  frag.join<-df[,12]
+  chr.enrich<-df[,13]
+  exp.dist.bp<-df[,14]
+  inter.sv<-apply(df[, c(21:24)], 1, sum)
+  hc1_chromothripsis<-Reduce(intersect, list(which(intra.sv >=6), which(segms.os.2s >=7), which(frag.join <=0.1), unique(which(chr.enrich <=0.05), which(exp.dist.bp<=0.05))))
+  hc2_chromothripsis<-Reduce(intersect, list(which(intra.sv >=3), which(segms.os.2s >=7), which(frag.join <=0.1), which(inter.sv >=4)))
+  lc_chromothripsis<-Reduce(intersect, list(which(intra.sv >=6), which(segms.os.2s >=4), which(frag.join <=0.1), which(chr.enrich <=0.05), which(exp.dist.bp<=0.05)))
+  print(id)
+  print(hc1_chromothripsis)
+  print(hc2_chromothripsis)
+  print(lc_chromothripsis)
+}
+```
+## shatterseek visualization
+
+### shatterseek visualization of chr17 in CTN-1
+
+```{r Displaying shatterseek visualization of chr17 in CTN-1 transient centrosome-loss cells, fig.align="center", eval = T, out.height = "400px", out.width="600px"}
+knitr::include_graphics("/xdisk/mpadi/jiawenyang/result/centrosome_loss/shatterseek/shatterseek_CTN1_chr17.png")
+```
+
+### shatterseek visualization of chr17 in CTN-6
+
+```{r Displaying shatterseek visualization of chr17 in CTN-6 transient centrosome-loss cells, fig.align="center", eval = T, out.height = "400px", out.width="600px"}
+knitr::include_graphics("/xdisk/mpadi/jiawenyang/result/centrosome_loss/shatterseek/shatterseek_CTN6_chr17.png")
+```
+
+### shatterseek visualization of chr17 in CTN-9
+
+```{r Displaying shatterseek visualization of chr17 in CTN-9 transient centrosome-loss cells, fig.align="center", eval = T, out.height = "400px", out.width="600px"}
+knitr::include_graphics("/xdisk/mpadi/jiawenyang/result/centrosome_loss/shatterseek/shatterseek_CTN9_chr17.png")
+```
+
+<a href="#top3" class="back-to-top">Back to top</a>
+
+**_[back to home](/centrosome_loss_and_PCa/index.html)_**

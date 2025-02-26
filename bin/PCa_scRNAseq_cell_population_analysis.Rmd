@@ -1,0 +1,845 @@
+---
+title: "Prostate cancer single-cell samples reveal focal CNVs that enhance cancer cell fitness"
+date: "`r Sys.Date()`"
+output:  rmdformats::material
+---
+<style type="text/css">
+
+body{ /* Normal  */
+      font-size: 12px;
+  }
+td {  /* Table  */
+  font-size: 12px;
+}
+h1.title {
+  font-size: 25px;
+  color: White;
+  font-family:"Arial";
+}
+h1 { /* Header 1 */
+  font-size: 24px;
+  color: DarkBlue;
+  font-family:"Arial";
+}
+h2 { /* Header 2 */
+    font-size: 22px;
+  color: DarkBlue;
+  font-family:"Arial";
+}
+h3 { /* Header 3 */
+  font-size: 20px;
+  font-family: "Times New Roman", Times, serif;
+  color: DarkBlue;
+}
+code.r{ /* Code block */
+    font-size: 12px;
+}
+pre { /* Code block - determines code spacing between lines */
+    font-size: 12px;
+}
+</style>
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = F, message = F)
+```
+
+```{r clean environment, include=F, echo=F, eval = T}
+rm(list = ls())
+gc()
+```
+
+```{r load library, include=TRUE, echo=TRUE, warning = F, message = F, eval = T}
+#dyn.load("/opt/ohpc/pub/apps/proj/7.2.1/lib64/libproj.so.19") #for PUMA new clusters
+dyn.load("/opt/ohpc/pub/apps/proj/7.2.1/lib/libproj.so.19")
+dyn.load("/opt/ohpc/pub/apps/gdal/3.3.2/lib/libgdal.so.29")
+dyn.load("/home/u16/jiawenyang/R/library_4.2/ragg/libs/ragg.so")
+dyn.load("/opt/ohpc/pub/apps/jags/4.3.0/lib/libjags.so.4.0.3")
+dyn.load("/opt/ohpc/pub/apps/glpk/5.0/lib/libglpk.so.40")
+dyn.load("/opt/ohpc/pub/libs/gnu8/hdf5/1.10.5/lib/libhdf5_hl.so.100")
+#dyn.load("/opt/ohpc/pub/libs/gnu13/hdf5/1.14.0/lib/libhdf5_hl.so.310") #for PUMA new clusters
+dyn.load("/opt/ohpc/pub/apps/jags/4.3.0/lib/libjags.so.4.0.3")
+dyn.load("/opt/ohpc/pub/apps/glpk/5.0/lib/libglpk.so.40")
+
+library(ggplot2)
+library(Seurat)
+library(scater)
+library(SeuratObject)
+library(SeuratDisk)
+library(dbplyr)
+library(Matrix)
+library(shiny)
+library(celldex)
+library(SingleR)
+library(igraph)
+library(patchwork)
+library(infercnv)
+library(DT)
+library(ggbio)
+library(RCircos)
+library(GenomicRanges)
+library(biovizBase)
+
+
+#if there is some problem loading packages, try refresh the session first.
+options(future.globals.maxSize = 3e+09)
+```
+
+# Importing and proccessing of PCa scRNAseq data from GSE176031
+
+<div id="top1"></div>
+
+**_[back to home](/centrosome_loss_and_PCa/index.html)_**
+
+```{r load data, include = TRUE, echo=TRUE, eval = T}
+FILES<-list.files("/xdisk/mpadi/jiawenyang/data/centrosome_loss/scRNAseq/GSE176031", pattern = "*txt$", 
+                  full.names = T, recursive = T)
+pb<-FILES[grep("PB", FILES)]
+prp<-intersect(FILES[-grep("org", FILES)], FILES[grep("PR", FILES)])
+prp_normal<-prp[grep("_N", prp)]
+prp_tumor<-prp[grep("_T", prp)]
+unmathed_prp<-prp[!prp %in% c(prp_normal, prp_tumor)]
+org<-FILES[grep("org", FILES)]
+```
+
+```{r read in data to the env list, eval = F, include = T, echo = F}
+for (i in 1:length(prp_normal)){
+  file<-prp_normal[i]
+  sample_id<-strsplit(strsplit(file, "/")[[1]][9], "[.]")[[1]][1]
+  edat<-read.table(file, sep = "\t", quote = "", header = T, row.names = 1)
+  assign(sample_id, edat)
+}
+
+#summarize normal samples 
+PR5249_N<-merge(GSM5353230_PA_PR5249_N1_S1_L001_dge, GSM5353231_PA_PR5249_N2_S2_L001_dge, by = 0)
+PR5249_N<-data.frame(PR5249_N[,-1], row.names=PR5249_N[,1])
+
+PR5251_N<-merge(GSM5353234_PA_PR5251_N1_S5_L001_dge, GSM5353235_PA_PR5251_N2_S6_L001_dge, by = 0)
+PR5251_N<-data.frame(PR5251_N[,-1], row.names=PR5251_N[,1])
+
+PR5254_N<-merge(GSM5353238_PA_PR5254_N1_S13_L001_dge, GSM5353239_PA_PR5254_N2_S14_L001_dge, by = 0)
+PR5254_N<-data.frame(PR5254_N[,-1], row.names=PR5254_N[,1])
+
+PR5261_N<-merge(GSM5353241_PA_PR5261_N1_S21_L002_dge, GSM5353242_PA_PR5261_N2_S22_L002_dge, by = 0)
+PR5261_N<-data.frame(PR5261_N[,-1], row.names=PR5261_N[,1])
+
+for (k in 1:length(prp_tumor)){
+  file<-prp_tumor[k]
+  sample_id<-strsplit(strsplit(file, "/")[[1]][9], "[.]")[[1]][1]
+  edat<-read.table(file, sep = "\t", quote = "", header = T, row.names = 1)
+  assign(sample_id, edat)
+}
+
+#summarize tumor samples
+PR5249_T<-merge(GSM5353232_PA_PR5249_T1_S3_L001_dge, GSM5353233_PA_PR5249_T2_S4_L001_dge, by = 0)
+PR5249_T<-data.frame(PR5249_T[,-1], row.names=PR5249_T[,1])
+
+PR5251_T<-merge(GSM5353236_PA_PR5251_T1_S7_L001_dge, GSM5353237_PA_PR5251_T2_S8_L001_dge, by = 0)
+PR5251_T<-data.frame(PR5251_T[,-1], row.names=PR5251_T[,1])
+
+PR5254_T<-GSM5353240_PA_PR5254_T1_S15_L001_dge
+
+PR5261_T<-merge(GSM5353243_PA_PR5261_T1_S23_L002_dge, GSM5353244_PA_PR5261_T2_S24_L002_dge, by = 0)
+PR5261_T<-data.frame(PR5261_T[,-1], row.names=PR5261_T[,1])
+```
+
+```{r read in data to the env list and save data as image, eval = F, include=TRUE, echo=TRUE}
+rm(list = ls()[grep("GSM", ls())])
+samples<-c("PR5249_N", "PR5251_N", "PR5254_N", "PR5261_N", "PR5249_T", "PR5251_T", "PR5254_T", "PR5261_T")
+
+PCa_RP_matched_sample_list<-list()
+for (i in 1:length(samples)){
+  sample_id<-samples[i]
+  tumor<-CreateSeuratObject(counts = get(sample_id), min.cells = 3, min.features = 200, project = sample_id)
+  tumor[["percent.mt"]]<-PercentageFeatureSet(tumor, pattern = "^MT-")
+  tumor <- subset(tumor, subset = nFeature_RNA > 200 & percent.mt < 5)
+  tumor<-NormalizeData(tumor)
+  tumor <- FindVariableFeatures(tumor, selection.method = "vst", nfeature = 2000)
+  PCa_RP_matched_sample_list[[sample_id]]<-tumor
+}
+
+features <- SelectIntegrationFeatures(object.list = PCa_RP_matched_sample_list, nfeatures = 3000)
+
+anchors<-FindIntegrationAnchors(object.list = PCa_RP_matched_sample_list, anchor.features = features)
+
+PCa_RP_matched_combined<-IntegrateData(anchorset = anchors)
+```
+
+```{r import integrate object, include = T, echo = T, eval = T}
+load("/xdisk/mpadi/jiawenyang/data/centrosome_loss/scRNAseq/GSE176031/GSE176031_Seurat_integrated_analysis_prp_pair_matched_samples.Rdata")
+DefaultAssay(PCa_RP_matched_combined) <- "RNA"
+
+# Run the standard workflow for visualization and clustering
+PCa_RP_matched_combined <- ScaleData(PCa_RP_matched_combined, verbose = FALSE)
+PCa_RP_matched_combined <- RunPCA(PCa_RP_matched_combined, npcs = 30, verbose = FALSE)
+PCa_RP_matched_combined <- RunUMAP(PCa_RP_matched_combined, reduction = "pca", dims = 1:30)
+PCa_RP_matched_combined <- FindNeighbors(PCa_RP_matched_combined, reduction = "pca", dims = 1:30)
+PCa_RP_matched_combined <- FindClusters(PCa_RP_matched_combined, resolution = 0.5)
+```
+
+```{r singleR, include = T, echo = T, eval = F}
+ref<-HumanPrimaryCellAtlasData()
+PCa_RP_matched_combined_singleR<-SingleR(test = PCa_RP_matched_combined@assays$integrated@data, ref = ref,labels = ref$label.fine, de.method = "wilcox")
+saveRDS(PCa_RP_matched_combined_singleR, file = "/xdisk/mpadi/jiawenyang/data/centrosome_loss/scRNAseq/GSE176031/PCa_RP_matched_combined_singleR.rds")
+```
+
+```{r load SingleR combined object, include = T, echo = T, eval = T}
+PCa_RP_matched_combined_singleR<-readRDS(file = "/xdisk/mpadi/jiawenyang/data/centrosome_loss/scRNAseq/GSE176031/PCa_RP_matched_combined_singleR.rds")
+cell_type<-as.data.frame(table(PCa_RP_matched_combined_singleR$labels))
+cell_type<-cell_type[order(cell_type$Freq, decreasing = T),]
+all.markers <- metadata(PCa_RP_matched_combined_singleR)$de.genes
+PCa_RP_matched_combined[["SingleR_labels"]]<-unlist(lapply(PCa_RP_matched_combined_singleR$labels, function(x) strsplit(x, ":")[[1]][1]))
+```
+
+```{r add tissue infomation to integrated Seurat object, include=TRUE, echo=TRUE}
+normal_samples<-c("PR5249_N", "PR5251_N", "PR5254_N", "PR5261_N")
+tumor_samples<-c("PR5249_T", "PR5251_T", "PR5254_T", "PR5261_T")
+
+PCa_RP_matched_combined[["tissue_info"]]<-PCa_RP_matched_combined[["orig.ident"]]
+PCa_RP_matched_combined@meta.data$tissue_info[PCa_RP_matched_combined[["tissue_info"]]$tissue_info %in% normal_samples]<-"normal"
+PCa_RP_matched_combined@meta.data$tissue_info[PCa_RP_matched_combined[["tissue_info"]]$tissue_info %in% tumor_samples]<-"tumor"
+
+PCa_RP_matched_combined[["patient_id"]]<-PCa_RP_matched_combined[["orig.ident"]]
+PCa_RP_matched_combined@meta.data$patient_id<-unlist(lapply(PCa_RP_matched_combined@meta.data$patient_id, function(x) strsplit(x, "_")[[1]][1]))
+```
+
+```{r identify cell type and make annotation, eval = T, echo = T, include = T}
+DefaultAssay(PCa_RP_matched_combined)<-"RNA"
+PCa_RP_matched_combined <- JoinLayers(PCa_RP_matched_combined)
+```
+
+<a href="#top1" class="back-to-top">Back to top</a>
+
+# Cell type and origin annotation
+
+<div id="top2"></div>
+
+**_[back to home](/centrosome_loss_and_PCa/index.html)_**
+
+```{r visualization samples and classification, include=TRUE, echo=TRUE, eval = T}
+#Tumor vs. Normal
+p_tumor_vs_normal<-DimPlot(PCa_RP_matched_combined, reduction = "umap", split.by = "tissue_info", label = T, ncol = 2)
+
+p_by_patients <- DimPlot(PCa_RP_matched_combined, reduction = "umap",  group.by = "patient_id", cols = c("#8dd0c8", "#a9a0b2", "#f1c0e1", "#ffed2f"))+
+   labs(color = "Patient IDs") +
+   ggtitle("Cells from patients") +
+   theme(legend.title = element_text(face = "bold"),
+         title = element_text(face = "bold"))
+
+epithelial_cell <- WhichCells(PCa_RP_matched_combined, cells = names(which(PCa_RP_matched_combined$SingleR_labels == "Epithelial_cells")))
+epithelial_cell_plot<-DimPlot(PCa_RP_matched_combined, label=F, group.by="seurat_clusters", cells.highlight= epithelial_cell)+
+  scale_color_manual(labels = c("Unselected", "Epithelial cells"), values = c("grey", "#8A2BE2")) +
+  labs(color = "cell type") +
+  ggtitle("Epithelial cells") +
+  theme(legend.title = element_text(face = "bold"))
+epithelial_cell_plot<-LabelClusters(plot = epithelial_cell_plot, id = "seurat_clusters", fontface = "bold", color = "#000000")
+```
+
+
+## Annotating cell population based on tissue type
+
+```{r plot normal vs tumor, fig.width=10, fig.height = 6, eval = T}
+p_tumor_vs_normal
+```
+## Annotating cell population based on cell type
+
+```{r plot specific cell populations, eval = T, fig.width = 6, fig.height = 5}
+epithelial_cell_plot
+
+p_by_patients
+```
+## Annotating expression levels of PCa markers, basal epithehlial cell markers and luminal epithelial cell markers
+
+```{r epithelial cell dimplot for PCa markers,fig.height = 10, fig.width = 10}
+epithelial_PCa_RP_matched_combined<-subset(x = PCa_RP_matched_combined, subset = SingleR_labels == "Epithelial_cells")
+epithelial_PCa_RP_matched_PR5249_cells<-subset(x = epithelial_PCa_RP_matched_combined, subset = patient_id == "PR5249")
+
+FeaturePlot(epithelial_PCa_RP_matched_PR5249_cells, features = c("ERG", "MYC", "PCA3", "AR", "BRCA1", "BRCA2", "PTEN", "TP53", "RB1", "PTGR1", "ATM", "SPOP", "FOXA1", "CDK12", "APC", "CTNNB1"), ncol = 4)
+
+FeaturePlot(epithelial_PCa_RP_matched_PR5249_cells, features = c("TP63", "KRT5", "KRT14", "KRT19", "ITGB4", "ITGA6"), ncol = 3)
+
+FeaturePlot(epithelial_PCa_RP_matched_PR5249_cells, features = c("KRT8", "KRT18",  "KLK3", "NKX3-1", "FOLH1", "FOXA1"), ncol = 3)
+```
+
+<a href="#top2" class="back-to-top">Back to top</a>
+
+# Inferring CNVs from transcriptomic data
+
+<div id="top3"></div>
+
+**_[back to home](/centrosome_loss_and_PCa/index.html)_**
+
+## Applying InferCNV on epithelial cells from all 4 pair-matched radical prostatectomy samples
+```{r infercnv from epithelial cells, eval = F, include = T, echo = T}
+epithelial_PCa_RP_matched_combined<-subset(x = PCa_RP_matched_combined, subset = SingleR_labels == "Epithelial_cells")
+
+matched_epithelial_counts<-epithelial_PCa_RP_matched_combined@assays$RNA$data
+matched_epithelial_counts<-as.matrix(matched_epithelial_counts)
+matched_epithelial_annotations<-data.frame(V1 = epithelial_PCa_RP_matched_combined@meta.data[,"orig.ident"],
+                                    V2 = epithelial_PCa_RP_matched_combined@meta.data[,"tissue_info"],
+                                    V3 = epithelial_PCa_RP_matched_combined@meta.data[,"patient_id"],
+                                    V4 = epithelial_PCa_RP_matched_combined@meta.data[, "seurat_clusters"])
+rownames(matched_epithelial_annotations)<-rownames(epithelial_PCa_RP_matched_combined@meta.data)
+matched_epithelial_gene_code<-read.table(file = "/xdisk/mpadi/jiawenyang/src/infercnv/gene_pos.txt", row.names = 1)
+
+options(scipen = 100)
+PCa_epithelial_infercnv_obj = CreateInfercnvObject(raw_counts_matrix = matched_epithelial_counts,
+                                        annotations_file = matched_epithelial_annotations,
+                                        gene_order_file = matched_epithelial_gene_code,
+                                        ref_group_names = normal_samples)
+
+PCa_epithelial_infercnv_obj@options$chr_exclude <- c("chrM")
+```
+
+```{r run infercnv with HPC cluster for epithelial cells from all 4 patients, eval = F, include = T, echo = T}
+dyn.load("/opt/ohpc/pub/apps/gdal/3.3.2/lib/libgdal.so.29")
+dyn.load("/opt/ohpc/pub/apps/proj/7.2.1/lib/libproj.so.19")
+dyn.load("/opt/ohpc/pub/apps/jags/4.3.0/lib/libjags.so.4.0.3")
+
+library(infercnv)
+library(Matrix)
+
+PR5249_epithelial_infercnv_obj<-readRDS("/xdisk/mpadi/jiawenyang/data/centrosome_loss/scRNAseq/GSE176031/GSE176031_PR5249_epithelial_infercnv.rds")
+
+infercnv_obj = infercnv::run(PR5249_epithelial_infercnv_obj,
+                             cutoff=0.1,
+                             out_dir="/xdisk/mpadi/jiawenyang/result/centrosome_loss/infercnv/GSE176031-epithelial",
+                             cluster_by_groups = T,
+                             plot_steps=FALSE,
+                             denoise=TRUE,
+                             mask_nonDE_genes = T,
+                             include.spike = T,
+                             HMM = F)
+```
+
+
+## Applying InferCNV on epithelial cells from sample PR5249
+```{r prepare infercnv input from PR5249 epithelial cells, eval = F, include = T, echo = T}
+PR5249_PCa_RP_matched_combined<-subset(x = PCa_RP_matched_combined, subset = patient_id == "PR5249")
+PR5249_epithelial_PCa_RP_matched_combined<-subset(x = PR5249_PCa_RP_matched_combined, subset = SingleR_labels == "Epithelial_cells")
+
+PR5249_epithelial_counts<-PR5249_epithelial_PCa_RP_matched_combined@assays$RNA$data
+PR5249_epithelial_counts<-as.matrix(PR5249_epithelial_counts)
+PR5249_epithelial_annotations<-data.frame(V1 = PR5249_epithelial_PCa_RP_matched_combined@meta.data[,"orig.ident"],
+                                    V2 = PR5249_epithelial_PCa_RP_matched_combined@meta.data[,"tissue_info"],
+                                    V3 = PR5249_epithelial_PCa_RP_matched_combined@meta.data[, "seurat_clusters"])
+rownames(PR5249_epithelial_annotations)<-rownames(PR5249_epithelial_PCa_RP_matched_combined@meta.data)
+PR5249_epithelial_gene_code<-read.table(file = "/xdisk/mpadi/jiawenyang/src/infercnv/gene_pos.txt", row.names = 1)
+
+options(scipen = 100)
+PR5249_epithelial_infercnv_obj = CreateInfercnvObject(raw_counts_matrix = PR5249_epithelial_counts,
+                                        annotations_file = PR5249_epithelial_annotations,
+                                        gene_order_file = PR5249_epithelial_gene_code,
+                                        ref_group_names = c("PR5249_N"))
+
+PR5249_epithelial_infercnv_obj@options$chr_exclude <- c("chrM")
+```
+
+```{r run infercnv on with HPC cluster to get uphyloplot2, eval = F, include = T, echo = T}
+dyn.load("/opt/ohpc/pub/apps/gdal/3.3.2/lib/libgdal.so.29")
+dyn.load("/opt/ohpc/pub/apps/proj/7.2.1/lib/libproj.so.19")
+dyn.load("/opt/ohpc/pub/apps/jags/4.3.0/lib/libjags.so.4.0.3")
+
+library(infercnv)
+library(Matrix)
+
+PR5249_epithelial_infercnv_obj<-readRDS("/xdisk/mpadi/jiawenyang/data/centrosome_loss/scRNAseq/GSE176031/GSE176031_PR5249_epithelial_infercnv.rds")
+
+infercnv_obj = infercnv::run(PR5249_epithelial_infercnv_obj,
+                             cutoff=0.1,
+                             out_dir="/xdisk/mpadi/jiawenyang/result/centrosome_loss/infercnv/GSE176031_PR5249_epithelial_uphyloplot2",
+                             cluster_by_groups=FALSE,
+                             plot_steps=T,
+                             scale_data=T,
+                             denoise=T,
+                             noise_filter=0.12,
+                             analysis_mode='subclusters',
+                             tumor_subcluster_partition_method = c("random_trees"),
+                             HMM = T,
+                             HMM_type= c("i6"))
+```
+
+
+## Generating "phylogenetic tree" with InferCNV output (HMM + Random tree algorithm) from PR5249 epithelial cells
+```{r organize uphyloplot2 results for PR5249 sample}
+GSE176031_PR5249_epithelial_tumor.cell_groupings<-read.table("/xdisk/mpadi/jiawenyang/result/centrosome_loss/infercnv/GSE176031_PR5249_epithelial_uphyloplot2/17_HMM_predHMMi6.rand_trees.hmm_mode-subclusters.cell_groupings", sep = "\t", header = T)
+GSE176031_PR5249_epithelial_tumor.cell_groupings_new<-GSE176031_PR5249_epithelial_tumor.cell_groupings[grep("all_observations.all", GSE176031_PR5249_epithelial_tumor.cell_groupings$cell_group_name),] #remove control events from the original output.
+```
+
+```{python run uphyloplot2, eval = F, echo = T, include = T}
+python uphyloplot2.py -c 5
+```
+
+## Annotating cell population with subclusters based on CNVs
+
+```{r PR5249 annotated uphyloplot subclone in UMAP, include = T, echo = T, message = F, warning = F}
+group_name<-read.csv(file = "/xdisk/mpadi/jiawenyang/bin/uphyloplot2/CNV_files/infercnv_tumor_gse176031_PR5249.cell_groupings.csv", sep = ",")
+group_name<-na.omit(group_name)
+colnames(group_name)<-c("percentage", "subclone")
+
+GSE176031_PR5249_epithelial_tumor.cell_groupings<-read.table("/xdisk/mpadi/jiawenyang/result/centrosome_loss/infercnv/GSE176031_PR5249_epithelial_uphyloplot2/17_HMM_predHMMi6.rand_trees.hmm_mode-subclusters.cell_groupings", sep = "\t", header = T)
+GSE176031_PR5249_epithelial_tumor.cell_groupings_new<-GSE176031_PR5249_epithelial_tumor.cell_groupings[grep("all_observations.all", GSE176031_PR5249_epithelial_tumor.cell_groupings$cell_group_name),] #including all cells from tumor samples.
+
+GSE176031_PR5249_epithelial_tumor.cell_groupings_new$cell_group_name<-substr(GSE176031_PR5249_epithelial_tumor.cell_groupings_new$cell_group_name, 35, nchar(GSE176031_PR5249_epithelial_tumor.cell_groupings_new$cell_group_name))
+GSE176031_PR5249_epithelial_tumor.cell_groupings_new[, "subclone"]<-group_name[match(GSE176031_PR5249_epithelial_tumor.cell_groupings_new$cell_group_name, rownames(group_name)), "subclone"]
+
+epithelial_PCa_RP_matched_PR5249_cells[["subclone"]]<-GSE176031_PR5249_epithelial_tumor.cell_groupings_new[match(rownames(epithelial_PCa_RP_matched_PR5249_cells@meta.data), GSE176031_PR5249_epithelial_tumor.cell_groupings_new$cell), "subclone"]
+epithelial_PCa_RP_matched_PR5249_cells[["subclone"]][is.na(epithelial_PCa_RP_matched_PR5249_cells[["subclone"]]), "subclone"]<-"normal"
+
+p_by_subclone <- DimPlot(epithelial_PCa_RP_matched_PR5249_cells, reduction = "umap", group.by = "subclone") +
+scale_color_manual(labels = c("D", "E", "G", "H", "K", "L", "MO", "normal"), values = c("#e7e689", "#c55e7b", "#6aab73", "#365584", "#6582a2", "#6b8675", "#61497b","#7a7a7a")) +
+  labs(color = "subclones") +
+  ggtitle("GSE176031-PR5249 epithelial cells clonality") +
+  theme(legend.title = element_text(face = "bold"))
+
+p_by_subclone
+
+DT::datatable(epithelial_PCa_RP_matched_PR5249_cells@meta.data)
+
+group_name
+```
+
+<a href="#top3" class="back-to-top">Back to top</a>
+
+# Analyses based on subclusters with different CNVs
+
+<div id="top4"></div>
+
+**_[back to home](/centrosome_loss_and_PCa/index.html)_**
+
+## Performing transcriptomic analysis based on subclusters
+
+```{r Find markers in subclones, eval = T, echo = T, include = T, fig.width=10, fig.height=12}
+
+epithelial_PCa_RP_matched_PR5249_cells<-SetIdent(epithelial_PCa_RP_matched_PR5249_cells, value = "subclone")
+
+my_cols<-c("D" = "#e7e689", "E" = "#c55e7b", "G" = "#6aab73", "H" = "#365584", "K" = "#6582a2", "L" = "#6b8675", "MO"= "#61497b", "normal" = "#7a7a7a")
+
+#Differential genes between subclones:
+subclone.markers<-FindAllMarkers(epithelial_PCa_RP_matched_PR5249_cells, only.pos = TRUE)
+subclone.markers %>%
+    dplyr::group_by(cluster) %>%
+    dplyr::filter(p_val_adj <= 0.05) %>%
+    dplyr::slice_head(n = 10) %>%
+    dplyr::ungroup() -> sig.genes
+levels(epithelial_PCa_RP_matched_PR5249_cells)<-c("normal", "E", "D", "G", "H", "K","L", "MO")
+
+DoHeatmap(epithelial_PCa_RP_matched_PR5249_cells, features = sig.genes$gene, group.colors = my_cols ) +
+scale_fill_gradient2( low = rev(c('#d1e5f0','#67a9cf','#2166ac')), mid = "white", high = rev(c('#b2182b','#ef8a62','#fddbc7')), midpoint = 0, guide = "colourbar", aesthetics = "fill")
+
+basal.markers<-c("ITGA6", "KRT5")
+luminal.markers<-c("KRT18", "KRT8")
+pca.markers<-c("ERG", "PTGR1", "PCA3", "AR")
+
+RidgePlot(epithelial_PCa_RP_matched_PR5249_cells, features = c(basal.markers, luminal.markers), ncol = 2, cols = my_cols)
+
+RidgePlot(epithelial_PCa_RP_matched_PR5249_cells, features = pca.markers, ncol = 2, cols = my_cols)
+```
+
+
+## Associating CNVs with population size 
+
+### Organizing CNV region and subclone population size information from original data
+```{r annotate the subclones, include = T, echo = T, eval = T}
+PR5249_subclones<-read.table(file = "/xdisk/mpadi/jiawenyang/result/centrosome_loss/infercnv/GSE176031_PR5249_epithelial_uphyloplot2/HMM_CNV_predictions.HMMi6.rand_trees.hmm_mode-subclusters.Pnorm_0.5.pred_cnv_regions.dat", header = T)
+PR5249_subclones[grep("all_observations", PR5249_subclones$cell_group_name), "cell_type"]<-"tumor"
+PR5249_subclones[is.na(PR5249_subclones$cell_type), "cell_type"]<-"normal"
+
+PR5249_tumor_subclones<-PR5249_subclones[PR5249_subclones$cell_type == "tumor",]
+PR5249_tumor_subclones$cell_group_name<-substr(PR5249_tumor_subclones$cell_group_name, 35, nchar(PR5249_tumor_subclones$cell_group_name))
+PR5249_tumor_subclones[,"subclone"]<-group_name[match(PR5249_tumor_subclones$cell_group_name, rownames(group_name)),"subclone"]
+
+PR5249_tumor_subclones_cnv_region<-PR5249_tumor_subclones
+PR5249_tumor_subclones_cnv_region$state<-as.numeric(PR5249_tumor_subclones_cnv_region$state)
+DT::datatable(PR5249_tumor_subclones_cnv_region)
+```
+
+```{r simplify cnv regions for subclones, include = T, echo = T, eval = T}
+library(CNVRanger)
+reduce_regions<-data.frame()
+for (i in 1: length(unique(PR5249_tumor_subclones_cnv_region$chr))){
+  chr <- unique(PR5249_tumor_subclones_cnv_region$chr)[i]
+  region_df<-PR5249_tumor_subclones_cnv_region[PR5249_tumor_subclones_cnv_region$chr == chr,]
+  region_gr<-makeGRangesFromDataFrame(region_df, keep.extra.columns = T)
+  common_region<-GenomicRanges::reduce(region_gr)
+  reduce_regions<-rbind(reduce_regions, as.data.frame(common_region))
+}
+
+
+reduce_regions[, "cnv_region_id"]<-seq(from = 1, to = nrow(reduce_regions))
+
+grl_ori<-makeGRangesFromDataFrame(PR5249_tumor_subclones_cnv_region, keep.extra.columns = T)
+grl_sim<-makeGRangesFromDataFrame(reduce_regions, keep.extra.columns = T)
+olaps<-GenomicRanges::findOverlaps(grl_ori, grl_sim)
+
+PR5249_tumor_subclones_cnv_region_simp<-cbind(PR5249_tumor_subclones_cnv_region, reduce_regions[subjectHits(olaps),])
+
+DT::datatable(reduce_regions)
+```
+
+
+### Performing biserial correlation to associate CNVs and population size
+```{r associate cnv regions and cell fitness, include = T, echo = T, eval =T}
+### 1. we used biserial correlation + permutation test to test the correlations
+### between population size (continuous) and cnv_regions (binary)
+### 2. we first tested single cnv effects, only cnv_region 9 is significantly 
+### correlated with popu size (alpha=0.1)
+### 3. then we tested the combinations of cnv_region 9 with other non-signficant
+### cnv regions and we found that cnv_region 5 has a co-occurance with 9, making
+### it statistically significant.
+
+library(tidyverse)
+library(ltm)
+
+popu_sz = read.csv("/xdisk/mpadi/jiawenyang/result/centrosome_loss/infercnv/GSE176031_PR5249_epithelial_uphyloplot2/population_size.csv")
+cnv = read.csv("/xdisk/mpadi/jiawenyang/result/centrosome_loss/infercnv/GSE176031_PR5249_epithelial_uphyloplot2/simplified_cnv_region_and_subclones.csv")
+
+popu_sz = popu_sz[popu_sz$subclone%in%unique(cnv$subclone),]
+popu_sz = popu_sz[order(popu_sz$percentage),]
+
+population_size = popu_sz[,c("percentage","subclone")]
+cnv_regions = cnv[,c("cnv_region_id","subclone")]
+colnames(cnv_regions) = c("cnv_name","subclone")
+cnv_regions$cnv_name = as.character(cnv_regions$cnv_name)
+
+# Merge data
+merged_data = population_size %>%
+  left_join(cnv_regions, by = "subclone")
+
+# CNV binary matrix
+cnv_matrix = merged_data %>%
+  pivot_wider(names_from = cnv_name, values_from = cnv_name, values_fn = list(cnv_name = ~1), values_fill = list(cnv_name = 0)) %>%
+  dplyr::select(-percentage) %>%
+  column_to_rownames("subclone")
+
+cnv_matrix = cnv_matrix[,!colnames(cnv_matrix)%in%c("4","6")]
+
+# population size
+clone_size = merged_data %>%
+  distinct(subclone, .keep_all = TRUE) %>%
+  pull(percentage)
+
+
+# Permutation test function
+permutation_test = function(x, y, n_permutations = 10000) {
+  observed_corr = cor(x, y)
+  permuted_corrs = replicate(n_permutations, biserial.cor(y,sample(x)))
+  p_value = mean(abs(permuted_corrs) >= abs(observed_corr))
+  return(p_value)
+ 
+}
+
+# first, perform permutation test for each CNV region
+set.seed(123)
+p_values = apply(cnv_matrix, 2, 
+                 function(cnv) permutation_test(cnv, clone_size))
+
+observed_corr = cor(cnv_matrix[,1], clone_size)
+
+# Print the p-values
+p_values = as.data.frame(p_values)
+p_values = p_values[order(p_values$p_values), , drop = FALSE]
+
+single_variable_p_values = p_values
+
+# second, perform permutation test for combinations with 9
+cnv_matrix_combo = cnv_matrix %>% 
+  mutate(across(everything(), ~ . * cnv_matrix$`9`))
+colnames(cnv_matrix_combo) = paste0(colnames(cnv_matrix_combo), "&9")
+cnv_matrix_combo=cnv_matrix_combo[,colnames(cnv_matrix_combo)!="9&9"]
+
+set.seed(123)
+p_values = apply(cnv_matrix_combo, 2, 
+                 function(cnv) permutation_test(cnv, clone_size))
+
+# Print the p-values
+p_values = as.data.frame(p_values)
+p_values = p_values[order(p_values$p_values), , drop = FALSE]
+
+combined_varable_p_values = p_values
+```
+
+
+### Displaying association results
+```{r visualize p-value the ranking data}
+reduce_regions<-read.csv("/xdisk/mpadi/jiawenyang/result/centrosome_loss/infercnv/GSE176031_PR5249_epithelial_uphyloplot2/simplified_cnv_regions.csv")
+data_single_region<-cbind(reduce_regions[match(rownames(single_variable_p_values), reduce_regions$cnv_region_id),c("seqnames", "start", "end", "width")], single_variable_p_values)
+data_single_region[,"cnv_region"]<-paste0(data_single_region$seqnames, ": ", data_single_region$start, "-", data_single_region$end)
+
+data_combined_regions<-cbind(reduce_regions[match(substr(rownames(combined_varable_p_values), 1, nchar(rownames(combined_varable_p_values))-2), reduce_regions$cnv_region_id), c("seqnames", "start", "end", "width")], combined_varable_p_values)
+
+set.seed(123)
+cnv_region_number<-data.frame(nrow = 1:20)
+for(i in 1:nrow(data_single_region)){
+  mean_value = -log10(data_single_region$p_values[i]) #reflect the p-value of correlation.
+  #print(mean_value)
+  n = 20
+  sd = log10(data_single_region$width[i])/100 #reflect the width of cnv region with sd 
+  #print(sd) 
+  a = rnorm(n, mean = mean_value, sd = sd)
+  a <- as.data.frame(a)
+  cnv_region_number<-cbind(cnv_region_number, a)
+}
+
+set.seed(123)
+cnv_region_number_combined<-data.frame(nrow = 1:20)
+for(i in 1:nrow(data_combined_regions)){
+  mean_value = -log10(data_combined_regions$p_values[i]) #reflect the p-value of correlation.
+  #print(mean_value)
+  n = 20
+  sd = log10(data_combined_regions$width[i])/100 #reflect the width of cnv region with sd 
+  #print(sd)
+  a = rnorm(n, mean = mean_value, sd = sd)
+  a <- as.data.frame(a)
+  cnv_region_number_combined<-cbind(cnv_region_number_combined, a)
+}
+
+data_single_region
+
+data_combined_regions
+```
+
+### Visualizing the CNVs in each subclone
+```{r visualize the cnv regions and associate the cnv regions with cell fitness in PR5429, include = T, eval = T, echo = T, warning = F, message = F}
+library(ggbio)
+library(RCircos)
+library(GenomicRanges)
+library(biovizBase)
+
+PR5249_tumor_subclones_cnv_region[PR5249_tumor_subclones_cnv_region$state == 3, "cnv_state"]<-"neutral"
+PR5249_tumor_subclones_cnv_region[PR5249_tumor_subclones_cnv_region$state < 3, "cnv_state"]<-"LOH"
+PR5249_tumor_subclones_cnv_region[PR5249_tumor_subclones_cnv_region$state > 3, "cnv_state"]<-"gain"
+gr_PR5249_subclones_cnv<-makeGRangesFromDataFrame(PR5249_tumor_subclones_cnv_region, keep.extra.columns = T)
+
+#load chromosome cytoband
+data("UCSC.HG38.Human.CytoBandIdeogram")
+data(ideoCyto, package = "biovizBase")
+colnames(UCSC.HG38.Human.CytoBandIdeogram)<-c("Chromosome", "start", "end", "name", "gieStain")
+cyto.info<-makeGRangesFromDataFrame(UCSC.HG38.Human.CytoBandIdeogram,keep.extra.columns = T)
+seqlengths(gr_PR5249_subclones_cnv)<-seqlengths(ideoCyto$hg19)[names(seqlengths(gr_PR5249_subclones_cnv))]
+
+color_palette_for_clones<-c("#e7e689", "#c55e7b", "#6aab73", "#365584", "#6582a2","#61497b")
+
+for (i in 1:length(unique(gr_PR5249_subclones_cnv$subclone))) {
+  clone <- unique(gr_PR5249_subclones_cnv$subclone)[i]
+
+  p= autoplot(cyto.info[seqnames(cyto.info) %in% names(seqlengths(gr_PR5249_subclones_cnv))], layout = "karyogram", cytobands = T )  + 
+    layout_karyogram(data = gr_PR5249_subclones_cnv[gr_PR5249_subclones_cnv$subclone == clone,], aes(color = factor(cnv_state, levels = c("LOH", "gain", "neutral")), fill = subclone), size = 0.8, geom = "rect") +
+    labs(colour = "cnv_state") +
+    scale_color_manual(labels = c("LOH", "gain", "neutral"), values = c("#3399ff", "#cc0000", "#66cc00")) +
+    scale_fill_manual(labels = c("gneg", "gpos100", "gpos25", "gpos50", "gpos75", "gvar", "stalk", "acen", clone), values = c(c("#f9f9f9", "#474747", "#cecece", "#a0a0a0", "#737373", "#474747", "#d36c6c", "#8b2323"), alpha(c(color_palette_for_clones[i]), 0.6)))
+  print(clone)
+  print(p)
+}
+```
+
+### Visualizing the CNVs in PR5249 subclones with consistent CNVs in transient centrosome-loss xenograft tumors
+```{r overlap CNV regions of concsistent CNVs from centrosome loss samples and scRNAseq, eval = T, echo = T, include = T, message = F, warning = F}
+library(DT)
+
+load("/xdisk/mpadi/jiawenyang/result/centrosome_loss/cnvkit_wgs/xenograft_tumor_consistent_regions_granges.Rdata")
+
+PR5249_CNV_regions<-read.csv(file = "/xdisk/mpadi/jiawenyang/result/centrosome_loss/infercnv/GSE176031_PR5249_epithelial_uphyloplot2/cnv_region_and_subclones.csv")
+PR5249_CNV_regions[PR5249_CNV_regions$state == 3, "cnv_state"]<-"neutral"
+PR5249_CNV_regions[PR5249_CNV_regions$state < 3, "cnv_state"]<-"loss"
+PR5249_CNV_regions[PR5249_CNV_regions$state > 3, "cnv_state"]<-"gain"
+PR5249_CNV_regions<-PR5249_CNV_regions[PR5249_CNV_regions$cnv_state != "neutral",]
+PR5249_CNV_regions<-makeGRangesFromDataFrame(PR5249_CNV_regions, keep.extra.columns = T)
+
+cn_centrosome_loss_regions<-c(olps_gain, olps_loss)
+
+common_loss_region<-findOverlaps(PR5249_CNV_regions[PR5249_CNV_regions$cnv_state == "loss"], cn_centrosome_loss_regions[cn_centrosome_loss_regions$cnv_state == "loss"])
+
+common_gain_region<-findOverlaps(PR5249_CNV_regions[PR5249_CNV_regions$cnv_state == "gain"], cn_centrosome_loss_regions[cn_centrosome_loss_regions$cnv_state == "gain"])
+
+common_cnvs<-c(pintersect(PR5249_CNV_regions[PR5249_CNV_regions$cnv_state == "gain"][queryHits(common_gain_region),], 
+           cn_centrosome_loss_regions[cn_centrosome_loss_regions$cnv_state == "gain"][subjectHits(common_gain_region)]),
+pintersect(PR5249_CNV_regions[PR5249_CNV_regions$cnv_state == "loss"][queryHits(common_loss_region),], 
+           cn_centrosome_loss_regions[cn_centrosome_loss_regions$cnv_state == "loss"][subjectHits(common_loss_region)]))
+
+
+seqlengths(common_cnvs)<-seqlengths(ideoCyto$hg19)[names(seqlengths(common_cnvs))]
+
+p= autoplot(cyto.info[seqnames(cyto.info) %in% seqnames(common_cnvs)], layout = "karyogram", cytobands = T )  + 
+    layout_karyogram(data = common_cnvs, aes(color = factor(cnv_state, levels = c("gain", "loss")), fill = cnv_state), size = 0.8, geom = "rect") +
+    labs(colour = "cnv_state") +
+    scale_color_manual(labels = c("gain", "loss"), values = c("orange", "purple")) +
+    scale_fill_manual(labels = c("gneg", "gpos100", "gpos25", "gpos50", "gpos75", "gvar", "stalk", "acen","gain","loss"), values = c(c("#f9f9f9", "#474747", "#cecece", "#a0a0a0", "#737373", "#474747", "#d36c6c", "#8b2323"), alpha(c("#cc0000", "#3399ff"), 0.5)))
+
+print(p)
+
+#Protein coding gene annotation 
+ah <- AnnotationHub::AnnotationHub()
+ahDb <- AnnotationHub::query(ah, pattern = c("Homo sapiens", "EnsDb"))
+ahEdb <- ahDb[["AH109606"]]
+bt.genes<-ensembldb::genes(ahEdb)
+GenomeInfoDb::seqlevelsStyle(bt.genes)<-"UCSC"
+pc.genes<-subset(bt.genes, gene_biotype == "protein_coding")
+
+seqlengths(common_cnvs)<-seqlengths(pc.genes)[names(seqlengths(common_cnvs))]
+
+#Annotate cnv covered genes 
+olpas <- findOverlaps(pc.genes, common_cnvs, ignore.strand=TRUE)
+qh <- S4Vectors::queryHits(olpas)
+sh <- S4Vectors::subjectHits(olpas)
+covered_genes<-pc.genes[qh,"symbol"]
+regions<-common_cnvs[sh,"subclone"]
+
+df<-cbind(data.frame(covered_genes), data.frame(regions))
+DT::datatable(df[ ,c(1:6, 12)])
+```
+
+```{r PR5261, include = F, echo = F, eval = F}
+# Performing analysis on other 3 samples besides PR5249
+PR5261_group_name<-read.csv(file = "/xdisk/mpadi/jiawenyang/bin/uphyloplot2/CNV_files/infercnv_tumor_gse176031_PR5261.cell_groupings.csv", sep = ",")
+PR5261_group_name<-na.omit(PR5261_group_name)
+colnames(PR5261_group_name)<-c("percentage", "subclone")
+
+GSE176031_PR5261_epithelial_tumor.cell_groupings<-read.table("/xdisk/mpadi/jiawenyang/result/centrosome_loss/infercnv/GSE176031_PR5261_epithelial_uphyloplot2/17_HMM_predHMMi6.rand_trees.hmm_mode-subclusters.cell_groupings", sep = "\t", header = T)
+GSE176031_PR5261_epithelial_tumor.cell_groupings_new<-GSE176031_PR5261_epithelial_tumor.cell_groupings[grep("all_observations.all", GSE176031_PR5261_epithelial_tumor.cell_groupings$cell_group_name),] #including all cells from tumor samples.
+
+GSE176031_PR5261_epithelial_tumor.cell_groupings_new$cell_group_name<-substr(GSE176031_PR5261_epithelial_tumor.cell_groupings_new$cell_group_name, 35, nchar(GSE176031_PR5261_epithelial_tumor.cell_groupings_new$cell_group_name))
+GSE176031_PR5261_epithelial_tumor.cell_groupings_new[, "subclone"]<-PR5261_group_name[match(GSE176031_PR5261_epithelial_tumor.cell_groupings_new$cell_group_name, rownames(PR5261_group_name)), "subclone"]
+
+epithelial_PCa_RP_matched_PR5261_cells<-subset(x = epithelial_PCa_RP_matched_combined, subset = patient_id == "PR5261")
+
+GSE176031_PR5261_epithelial_tumor.cell_groupings_new[match(rownames(epithelial_PCa_RP_matched_PR5261_cells@meta.data), GSE176031_PR5261_epithelial_tumor.cell_groupings_new$cell), "subclone"]
+epithelial_PCa_RP_matched_PR5261_cells[["subclone"]]<-GSE176031_PR5261_epithelial_tumor.cell_groupings_new[match(rownames(epithelial_PCa_RP_matched_PR5261_cells@meta.data), GSE176031_PR5261_epithelial_tumor.cell_groupings_new$cell), "subclone"]
+epithelial_PCa_RP_matched_PR5261_cells[["subclone"]][is.na(epithelial_PCa_RP_matched_PR5261_cells[["subclone"]]), "subclone"]<-"normal"
+
+p_by_subclone <- DimPlot(epithelial_PCa_RP_matched_PR5261_cells, reduction = "umap", group.by = "subclone") +
+scale_color_manual(labels = c("D", "E", "G", "J", "L", "H", "M", "normal"), values = c("#e7e689", "#c55e7b", "#6aab73", "#365584",  "#6b8675", "salmon", "#61497b","#7a7a7a")) +
+  labs(color = "subclones") +
+  ggtitle("GSE176031-PR5261 epithelial cells clonality") +
+  theme(legend.title = element_text(face = "bold"))
+
+p_by_subclone
+
+DT::datatable(epithelial_PCa_RP_matched_PR5261_cells@meta.data)
+
+PR5261_subclones<-read.table(file = "/xdisk/mpadi/jiawenyang/result/centrosome_loss/infercnv/GSE176031_PR5261_epithelial_uphyloplot2/HMM_CNV_predictions.HMMi6.rand_trees.hmm_mode-subclusters.Pnorm_0.5.pred_cnv_regions.dat", header = T)
+PR5261_subclones[grep("all_observations", PR5261_subclones$cell_group_name), "cell_type"]<-"tumor"
+PR5261_subclones[is.na(PR5261_subclones$cell_type), "cell_type"]<-"normal"
+
+PR5261_tumor_subclones<-PR5261_subclones[PR5261_subclones$cell_type == "tumor",]
+PR5261_tumor_subclones$cell_group_name<-substr(PR5261_tumor_subclones$cell_group_name, 35, nchar(PR5261_tumor_subclones$cell_group_name))
+PR5261_tumor_subclones[,"subclone"]<-PR5261_group_name[match(PR5261_tumor_subclones$cell_group_name, rownames(PR5261_group_name)),"subclone"]
+
+PR5261_tumor_subclones_cnv_region<-PR5261_tumor_subclones
+
+PR5261_tumor_subclones_cnv_region$state<-as.numeric(PR5261_tumor_subclones_cnv_region$state)
+DT::datatable(PR5261_tumor_subclones_cnv_region)
+PR5261_group_name
+PR5261_subclones
+PR5261_tumor_subclones 
+```
+
+```{r visualize the cnv regions and associate the cnv regions with cell fitness in PR5261, include = F, echo = F, warning = F, message = F, eval = F}
+library(ggbio)
+library(RCircos)
+library(GenomicRanges)
+library(biovizBase)
+
+PR5261_tumor_subclones_cnv_region[PR5261_tumor_subclones_cnv_region$state == 3, "cnv_state"]<-"neutral"
+PR5261_tumor_subclones_cnv_region[PR5261_tumor_subclones_cnv_region$state < 3, "cnv_state"]<-"LOH"
+PR5261_tumor_subclones_cnv_region[PR5261_tumor_subclones_cnv_region$state > 3, "cnv_state"]<-"gain"
+gr_PR5261_subclones_cnv<-makeGRangesFromDataFrame(PR5261_tumor_subclones_cnv_region, keep.extra.columns = T)
+
+gr_PR5261_subclones_cnv
+
+#load chromosome cytoband
+data("UCSC.HG38.Human.CytoBandIdeogram")
+data(ideoCyto, package = "biovizBase")
+colnames(UCSC.HG38.Human.CytoBandIdeogram)<-c("Chromosome", "start", "end", "name", "gieStain")
+cyto.info<-makeGRangesFromDataFrame(UCSC.HG38.Human.CytoBandIdeogram,keep.extra.columns = T)
+seqlengths(gr_PR5261_subclones_cnv)<-seqlengths(ideoCyto$hg19)[names(seqlengths(gr_PR5261_subclones_cnv))]
+
+color_palette_for_clones<-c("#6aab73", "salmon")
+
+for (i in 1:length(unique(gr_PR5261_subclones_cnv$subclone))) {
+  clone <- unique(gr_PR5261_subclones_cnv$subclone)[i]
+
+  p= autoplot(cyto.info[seqnames(cyto.info) %in% names(seqlengths(gr_PR5261_subclones_cnv))], layout = "karyogram", cytobands = T )  + 
+    layout_karyogram(data = gr_PR5261_subclones_cnv[gr_PR5261_subclones_cnv$subclone == clone,], aes(color = factor(cnv_state, levels = c("LOH", "gain", "neutral")), fill = subclone), size = 0.8, geom = "rect") +
+    labs(colour = "cnv_state") +
+    scale_color_manual(labels = c("LOH", "gain", "neutral"), values = c("#3399ff", "#cc0000", "#66cc00")) +
+    scale_fill_manual(labels = c("gneg", "gpos100", "gpos25", "gpos50", "gpos75", "gvar", "stalk", "acen", clone), values = c(c("#f9f9f9", "#474747", "#cecece", "#a0a0a0", "#737373", "#474747", "#d36c6c", "#8b2323"), alpha(c(color_palette_for_clones[i]), 0.6)))
+  print(p)
+}
+```
+
+```{r PR5251, include = F, echo = F, eval = F}
+PR5251_group_name<-read.csv(file = "/xdisk/mpadi/jiawenyang/bin/uphyloplot2/CNV_files/infercnv_tumor_gse176031_PR5251.cell_groupings.csv", sep = ",")
+PR5251_group_name<-na.omit(PR5251_group_name)
+colnames(PR5251_group_name)<-c("percentage", "subclone")
+
+GSE176031_PR5251_epithelial_tumor.cell_groupings<-read.table("/xdisk/mpadi/jiawenyang/result/centrosome_loss/infercnv/GSE176031_PR5251_epithelial_uphyloplot2/17_HMM_predHMMi6.rand_trees.hmm_mode-subclusters.cell_groupings", sep = "\t", header = T)
+GSE176031_PR5251_epithelial_tumor.cell_groupings_new<-GSE176031_PR5251_epithelial_tumor.cell_groupings[grep("all_observations.all", GSE176031_PR5251_epithelial_tumor.cell_groupings$cell_group_name),] #including all cells from tumor samples.
+
+GSE176031_PR5251_epithelial_tumor.cell_groupings_new$cell_group_name<-substr(GSE176031_PR5251_epithelial_tumor.cell_groupings_new$cell_group_name, 35, nchar(GSE176031_PR5251_epithelial_tumor.cell_groupings_new$cell_group_name))
+GSE176031_PR5251_epithelial_tumor.cell_groupings_new[, "subclone"]<-PR5251_group_name[match(GSE176031_PR5251_epithelial_tumor.cell_groupings_new$cell_group_name, rownames(PR5251_group_name)), "subclone"]
+
+epithelial_PCa_RP_matched_PR5251_cells<-subset(x = epithelial_PCa_RP_matched_combined, subset = patient_id == "PR5251")
+
+GSE176031_PR5251_epithelial_tumor.cell_groupings_new[match(rownames(epithelial_PCa_RP_matched_PR5251_cells@meta.data), GSE176031_PR5251_epithelial_tumor.cell_groupings_new$cell), "subclone"]
+epithelial_PCa_RP_matched_PR5251_cells[["subclone"]]<-GSE176031_PR5251_epithelial_tumor.cell_groupings_new[match(rownames(epithelial_PCa_RP_matched_PR5251_cells@meta.data), GSE176031_PR5251_epithelial_tumor.cell_groupings_new$cell), "subclone"]
+epithelial_PCa_RP_matched_PR5251_cells[["subclone"]][is.na(epithelial_PCa_RP_matched_PR5251_cells[["subclone"]]), "subclone"]<-"normal"
+
+p_by_subclone <- DimPlot(epithelial_PCa_RP_matched_PR5251_cells, reduction = "umap", group.by = "subclone") +
+scale_color_manual(labels = c("D", "E", "G", "H", "K", "L", "normal"), values = c("#e7e689", "#c55e7b", "#6aab73", "#365584",  "salmon", "#61497b","#7a7a7a")) +
+  labs(color = "subclones") +
+  ggtitle("GSE176031-PR5251 epithelial cells clonality") +
+  theme(legend.title = element_text(face = "bold"))
+
+p_by_subclone
+
+PR5251_subclones<-read.table(file = "/xdisk/mpadi/jiawenyang/result/centrosome_loss/infercnv/GSE176031_PR5251_epithelial_uphyloplot2/HMM_CNV_predictions.HMMi6.rand_trees.hmm_mode-subclusters.Pnorm_0.5.pred_cnv_regions.dat", header = T)
+PR5251_subclones[grep("all_observations", PR5251_subclones$cell_group_name), "cell_type"]<-"tumor"
+PR5251_subclones[is.na(PR5251_subclones$cell_type), "cell_type"]<-"normal"
+
+PR5251_tumor_subclones<-PR5251_subclones[PR5251_subclones$cell_type == "tumor",]
+PR5251_tumor_subclones$cell_group_name<-substr(PR5251_tumor_subclones$cell_group_name, 35, nchar(PR5251_tumor_subclones$cell_group_name))
+PR5251_tumor_subclones[,"subclone"]<-PR5251_group_name[match(PR5251_tumor_subclones$cell_group_name, rownames(PR5251_group_name)),"subclone"]
+
+PR5251_tumor_subclones_cnv_region<-PR5251_tumor_subclones
+
+PR5251_tumor_subclones_cnv_region$state<-as.numeric(PR5251_tumor_subclones_cnv_region$state)
+DT::datatable(PR5251_tumor_subclones_cnv_region)
+PR5251_group_name
+PR5251_subclones
+PR5251_tumor_subclones 
+```
+
+
+```{r visualize the cnv regions and associate the cnv regions with cell fitness in PR5251, include = F, echo = F, warning = F, message = F, eval = F}
+PR5261_tumor_subclones_cnv_region[PR5261_tumor_subclones_cnv_region$state == 3, "cnv_state"]<-"neutral"
+PR5261_tumor_subclones_cnv_region[PR5261_tumor_subclones_cnv_region$state < 3, "cnv_state"]<-"LOH"
+PR5261_tumor_subclones_cnv_region[PR5261_tumor_subclones_cnv_region$state > 3, "cnv_state"]<-"gain"
+gr_PR5261_subclones_cnv<-makeGRangesFromDataFrame(PR5261_tumor_subclones_cnv_region, keep.extra.columns = T)
+
+gr_PR5261_subclones_cnv
+
+#load chromosome cytoband
+data("UCSC.HG38.Human.CytoBandIdeogram")
+data(ideoCyto, package = "biovizBase")
+colnames(UCSC.HG38.Human.CytoBandIdeogram)<-c("Chromosome", "start", "end", "name", "gieStain")
+cyto.info<-makeGRangesFromDataFrame(UCSC.HG38.Human.CytoBandIdeogram,keep.extra.columns = T)
+seqlengths(gr_PR5261_subclones_cnv)<-seqlengths(ideoCyto$hg19)[names(seqlengths(gr_PR5261_subclones_cnv))]
+
+color_palette_for_clones<-c("#6aab73", "salmon")
+
+for (i in 1:length(unique(gr_PR5261_subclones_cnv$subclone))) {
+  clone <- unique(gr_PR5261_subclones_cnv$subclone)[i]
+
+  p= autoplot(cyto.info[seqnames(cyto.info) %in% names(seqlengths(gr_PR5261_subclones_cnv))], layout = "karyogram", cytobands = T )  + 
+    layout_karyogram(data = gr_PR5261_subclones_cnv[gr_PR5261_subclones_cnv$subclone == clone,], aes(color = factor(cnv_state, levels = c("LOH", "gain", "neutral")), fill = subclone), size = 0.8, geom = "rect") +
+    labs(colour = "cnv_state") +
+    scale_color_manual(labels = c("LOH", "gain", "neutral"), values = c("#3399ff", "#cc0000", "#66cc00")) +
+    scale_fill_manual(labels = c("gneg", "gpos100", "gpos25", "gpos50", "gpos75", "gvar", "stalk", "acen", clone), values = c(c("#f9f9f9", "#474747", "#cecece", "#a0a0a0", "#737373", "#474747", "#d36c6c", "#8b2323"), alpha(c(color_palette_for_clones[i]), 0.6)))
+  print(p)
+}
+```
+
+<a href="#top4" class="back-to-top">Back to top</a>
+
+**_[back to home](/centrosome_loss_and_PCa/index.html)_**
