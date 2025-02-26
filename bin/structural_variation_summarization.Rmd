@@ -1,0 +1,762 @@
+---
+title: "Genomic characterization of transient centrosome-loss tumor model"
+author: "Jiawen yang"
+date: "`r Sys.Date()`"
+output:  rmdformats::material
+---
+<style type="text/css">
+
+body{ /* Normal  */
+      font-size: 12px;
+  }
+td {  /* Table  */
+  font-size: 12px;
+}
+h1.title {
+  font-size: 25px;
+  color: White;
+  font-family:"Arial";
+}
+h1 { /* Header 1 */
+  font-size: 24px;
+  color: DarkBlue;
+  font-family:"Arial";
+}
+h2 { /* Header 2 */
+    font-size: 22px;
+  color: DarkBlue;
+  font-family:"Arial";
+}
+h3 { /* Header 3 */
+  font-size: 20px;
+  font-family: "Times New Roman", Times, serif;
+  color: DarkBlue;
+}
+code.r{ /* Code block */
+    font-size: 12px;
+}
+pre { /* Code block - determines code spacing between lines */
+    font-size: 12px;
+}
+</style>
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r clean environment, include=FALSE, echo=FALSE}
+rm(list = ls())
+gc()
+```
+
+# Characterizing SV profiles of transient centrosome-loss samples
+
+## Loading and organizing structural variation calls from DELLY output 
+
+### Loading delly data
+```{r loading delly, eval = FALSE, include=TRUE, echo=TRUE, message=FALSE, warning=FALSE}
+library(data.table)
+library(dplyr)
+library(StructuralVariantAnnotation)
+
+data_delly<-c("/xdisk/mpadi/jiawenyang/result/centrosome_loss/delly/bedpe")
+FILES_delly<-list.files(path = data_delly,
+                  pattern = "*.bedpe$",
+                  recursive = T,
+                  full.names = T)
+
+chrs<-paste0("chr", c(1:22, "X", "Y"))
+
+sv_tra_all<-list()
+for (i in 1:length(FILES_delly)){
+  sample_id<-strsplit(strsplit(FILES_delly[i], "/")[[1]][9], "[.]")[[1]][1]
+  sv<-read.table(FILES_delly[i], header = T, stringsAsFactors=FALSE, quote="")
+  sv<-sv[sv$FILTER =="PASS", ]
+  sv<-sv[sv$CHROM_A %in% chrs & sv$CHROM_B %in% chrs, ]
+  sv_tra<-sv[sv$TYPE == "BND",]
+  sv_tra<-sv_tra[which(abs(sv_tra$START_A - sv_tra$END_A) >= 900), ]
+  sv_tra[, "MAPQ"]<-unlist(lapply(sv_tra$INFO_A, function(x) strsplit(x, ";")[[1]][7]))
+  sv_tra$MAPQ <- as.numeric(gsub("MAPQ=", "", sv_tra$MAPQ))
+  sv_tra<-sv_tra[sv_tra$MAPQ >= 30, ]
+  sv_tra[,"sample"]<-rep(sample_id, nrow(sv_tra))
+  sv_tra_all[[sample_id]]<-sv_tra
+}
+#saveRDS(sv_tra_all, file = "/xdisk/mpadi/jiawenyang/result/centrosome_loss/circos/sv_delly_tra.RDS")
+
+other_sv_types<-c("INV", "DEL", "DUP")
+
+sv_others_all<-list()
+for (i in 1:length(FILES_delly)){
+  sample_id<-strsplit(strsplit(FILES_delly[i], "/")[[1]][9], "[.]")[[1]][1]
+  sv<-read.table(FILES_delly[i], header = T, stringsAsFactors=FALSE, quote="")
+  sv<-sv[sv$FILTER =="PASS", ]
+  sv<-sv[sv$CHROM_A %in% chrs & sv$CHROM_B %in% chrs, ]
+  sv_others<-sv[sv$TYPE %in% other_sv_types,]
+  sv_others<-sv_others[which(abs(sv_others$START_A - sv_others$END_A) >= 200), ]
+  sv_others[, "MAPQ"]<-unlist(lapply(sv_others$INFO_A, function(x) strsplit(x, ";")[[1]][5]))
+  sv_others$MAPQ <- as.numeric(gsub("MAPQ=", "", sv_others$MAPQ))
+  sv_others<-sv_others[sv_others$MAPQ >= 30, ]
+  sv_others[,"sample"]<-rep(sample_id, nrow(sv_others))
+  sv_others_all[[sample_id]]<-sv_others
+}
+#saveRDS(sv_others_all, file = "/xdisk/mpadi/jiawenyang/result/centrosome_loss/circos/sv_delly_others.RDS")
+```
+
+### Binning SV data
+```{R bin data, eval = F, echo = T}
+sv_others_all<-readRDS(file = "/xdisk/mpadi/jiawenyang/result/centrosome_loss/circos/sv_delly_others.RDS")
+
+# Set constants and variables.
+SV_COLUMNS <- c("CHROM_A",
+                "START_A",
+                "END_A",
+                "CHROM_B",
+                "START_B",
+                "END_B",
+                "TYPE")
+
+# Load gene_listsa and look for variants of interest.
+chr_tab <- read.table("/xdisk/mpadi/jiawenyang/src/genome_data/hg38ChromLength.txt", stringsAsFactors = FALSE)
+colnames(chr_tab)<-c("chr", "length")
+chr_tab$chr<-paste0("chr", chr_tab$chr)
+
+
+bin_size = 1000000 # 1 M per bin for example
+# Get number of SVs per bin function.
+count_sv <- function(sv_tab) {
+  total_count <- c()
+  interval_list <- c()
+  for (chr in 1:nrow(chr_tab)) {
+    intervals <- seq(from = 1, to = (chr_tab[chr, "length"] + bin_size), by = bin_size)
+    chr_count <- rep(0, length(intervals))
+    chr_sv <- sv_tab[which(sv_tab$CHROM_A %in% chr_tab[chr, "chr"]), ]
+    chr_sv <- na.omit(chr_sv)
+    for (i in 1:length(intervals)) {
+      if (nrow(chr_sv) >= 1) {
+        for (j in 1:nrow(chr_sv)) {
+          pos <- as.numeric(chr_sv[j, "START_A"]) + (as.numeric(chr_sv[j, "END_A"]) - as.numeric(chr_sv[j, "START_A"]))/ 2
+          if ((pos >= intervals[i]) & (pos <= intervals[i] +bin_size)) {
+              chr_count[i] <- chr_count[i] + 1
+          }
+          else {
+              next
+          }
+        }
+      }
+      else {
+          next
+      }
+    }
+    names(chr_count) <- rep(chr_tab[chr, "chr"], length(intervals))
+    interval_list <- c(interval_list, intervals)
+    total_count <- c(total_count, chr_count)
+  }
+  total_count <- data.frame(chr = names(total_count),
+                            bin_start = interval_list,
+                            bin_end = as.numeric(interval_list) + bin_size - 1,
+                            count = total_count)
+  return(total_count)
+}
+
+for (file in FILES_delly) {
+  id <- strsplit(file, "/")[[1]][9]
+  id <- gsub(".bedpe", "", id)
+  sv_per_bin<-count_sv(sv_others_all[[id]])
+  write.csv(sv_per_bin,
+            paste0("/xdisk/mpadi/jiawenyang/result/centrosome_loss/circos/", id, "1Mbp_bin_counts.csv"),
+            row.names = FALSE)
+}
+```
+
+```{r loading in binned sv count and tra data, include = T, echo = T, message=FALSE}
+library(circlize)
+#initialize the circos cytobands:
+files_bin_sv_counts<-list.files(path = "/xdisk/mpadi/jiawenyang/result/centrosome_loss/circos/1Mbp_version",
+                                #pattern = "*1OMbp_bin_counts.csv", #for 10mbp bin size 
+                                pattern = "*bin_counts.csv", # for 1 mbp bin size
+                                full.names = T,
+                                recursive = T)
+files_sv_tra<-readRDS(file = "/xdisk/mpadi/jiawenyang/result/centrosome_loss/circos/sv_delly_tra.RDS")
+```
+
+## Characterizing the genome of transient centrosome-loss samples
+
+### Generating circos plots for all transient centrosom-loss samples
+```{r circos plot for sv distribution on genome, warning = F, message = F, eval = T}
+set.seed(123)
+color_df<-data.frame(color = rand_color(24, transparency = 0.5), chr = c(paste0("chr", c(1:22, "X", "Y"))))
+rownames(color_df)<-color_df$chr
+
+generate_sv_circosplot<-function(sample_id){
+  #Translocation
+  sv_tra<-files_sv_tra[[sample_id]]
+  sv_tra1<-sv_tra[,1:3]
+  colnames(sv_tra1)<-c("chr","start","end")
+  sv_tra2<-sv_tra[,4:6]
+  colnames(sv_tra2)<-c("chr","start","end")  
+  
+  #binned other SVs
+  sv_others_bin<-read.csv(files_bin_sv_counts[grep(sample_id, files_bin_sv_counts)])
+  links_color = rep(color_df[unique(sv_tra1$chr), "color"], table(sv_tra1$chr)[unique(sv_tra1$chr)])
+  
+  #Generate plot
+  #pdf(file = paste0("/xdisk/mpadi/jiawenyang/result/centrosome_loss/circos/plots/", sample_id, "_CircosPlot.pdf"))
+  print(sample_id)
+  circos.par("start.degree" = 90, "track.height" = 0.25)
+  circos.initializeWithIdeogram(species='hg38', chromosome.index = paste0("chr", c(1:22, "X", "Y")))
+  
+  circos.genomicTrack(sv_others_bin, 
+      panel.fun = function(region, value, ...) {
+          circos.genomicRect(region, value, ytop.column = 1, ybottom = 0, 
+              col = "red", border = "red", 
+              ...)
+          circos.yaxis(side = "left",labels.cex = 0.3)
+          circos.lines(CELL_META$cell.xlim, c(0, 0), lty = 1, col = "black")
+  })
+  circos.genomicLink(sv_tra1, sv_tra2, rou = get_most_inside_radius(), border = links_color)
+  circos.clear()
+  #dev.off()
+}
+
+for (i in 1:length(names(files_sv_tra))){
+  generate_sv_circosplot(names(files_sv_tra)[i])
+}
+```
+
+### Generating circos plot comparing genomes between transient centrosome-loss cells and xenograft tumor derived from it
+```{r circos plot for sv distribution on genome for CTN-9 and CTN9-T4, echo = T, include = T, eval = T, message = FALSE, warning = FALSE}
+library(GenomicRanges)
+#circos plot with CTN9, CTN9R-T4 (CN9R2_2) and the in common translocation events.
+ #Translocation events from CTN-9 sample
+  sv_tra<-files_sv_tra[["CN_9_1_CKDN200002996-1A_H57L2DSXY_L1"]]
+  sv_tra1<-sv_tra[,1:3]
+  colnames(sv_tra1)<-c("chr","start","end")
+  sv_tra2<-sv_tra[,4:6]
+  colnames(sv_tra2)<-c("chr","start","end")  
+  
+  #Translocation events common in CTN-9 and CTN9R-T4(CN9R2_2) 
+  CTN9<-files_sv_tra[["CN_9_1_CKDN200002996-1A_H57L2DSXY_L1"]][,1:3]
+  CN9R2_2<-files_sv_tra[["CN2_2b_CKDN200005067-1A_H5T7VDSXY_L1"]][,1:3]
+  CTN9_gr<-makeGRangesFromDataFrame(CTN9, start.field = c("START_A"), end.field = "END_A", seqnames.field = "CHROM_A")
+  CN9R2_2_gr<-makeGRangesFromDataFrame(CN9R2_2, start.field = c("START_A"), end.field = "END_A", seqnames.field = "CHROM_A")
+  olps<-findOverlaps(CTN9_gr, CN9R2_2_gr)
+  sv_tra<-files_sv_tra[["CN_9_1_CKDN200002996-1A_H57L2DSXY_L1"]][queryHits(olps),]
+  sv_tra<-sv_tra[!duplicated(sv_tra),]
+  sv_tra1<-sv_tra[,1:3]
+  sv_tra2<-sv_tra[,4:6]
+  colnames(sv_tra1)<-c("chr","start","end")
+  colnames(sv_tra2)<-c("chr","start","end")
+  
+  #binned other SVs
+  sv_others_bin_cn9<-read.csv(files_bin_sv_counts[grep("CN_9_1", files_bin_sv_counts)])
+  sv_others_bin_cn9R2_2<-read.csv(files_bin_sv_counts[grep("CN2_2b", files_bin_sv_counts)])
+  links_color = rep(color_df[unique(sv_tra1$chr), "color"], table(sv_tra1$chr)[unique(sv_tra1$chr)])
+  
+#Generate plot
+  #pdf(file = "/xdisk/mpadi/jiawenyang/result/centrosome_loss/circos/cn9_cn9r2_2_CircosPlot_common_traslocations.pdf")
+  circos.par("start.degree" = 90, "track.height" = 0.25)
+  circos.initializeWithIdeogram(species='hg38', chromosome.index = paste0("chr", c(1:22, "X", "Y")))
+  
+    circos.genomicTrack(sv_others_bin_cn9R2_2, 
+      ylim = c(0, 30),
+      panel.fun = function(region, value, ...) {
+          circos.genomicRect(region, value, ytop.column = 1, ybottom = 0, ylim = c(0, 40),
+              col = "#ff7768", border = "#ff7768", 
+              ...)
+          circos.yaxis(side = "left",labels.cex = 0.3)
+          circos.lines(CELL_META$cell.xlim, c(0, 0), lty = 1, col = "black")
+  })
+    
+    circos.genomicTrack(sv_others_bin_cn9, 
+      ylim = c(0, 30),                  
+      panel.fun = function(region, value, ...) {
+          circos.genomicRect(region, value, ytop.column = 1, ybottom = 0, ylim = c(0, 40),
+              col = "#ffd600", border = "#ffd600", 
+              ...)
+          circos.yaxis(side = "left",labels.cex = 0.3)
+          circos.lines(CELL_META$cell.xlim, c(0, 0), lty = 1, col = "black")
+  })
+    
+  circos.genomicLink(sv_tra1, sv_tra2, rou = get_most_inside_radius(), border = links_color)
+  circos.clear()
+  #dev.off()
+```
+
+### Generating Heatmap for SVs per bin of all samples
+```{r heatmap for SV per bin of all samples, include = T, echo = T, eval = T, warning = F, message = F, fig.width = 10, fig.height = 8}
+library(ComplexHeatmap)
+
+files_bin_sv_counts<-list.files(path = "/xdisk/mpadi/jiawenyang/result/centrosome_loss/circos/10Mbp_version", #for heatmap, use bin size =10 Mbp version.
+                                pattern = "*1OMbp_bin_counts.csv", #for 10mbp bin size 
+                                #pattern = "*bin_counts.csv", # for 1 mbp bin size
+                                full.names = T,
+                                recursive = T)
+
+combined_bin_sv_counts<-read.csv(files_bin_sv_counts[1])[,1:3]
+for (file in files_bin_sv_counts){
+  #file =  "/xdisk/mpadi/jiawenyang/result/centrosome_loss/circos/CN2_2b_CKDN200005067-1A_H5T7VDSXY_L1_bin_counts.csv"  
+  file_id<-gsub("10Mbp_bin_counts.csv", "", strsplit(file, "/")[[1]][9])
+  df<-as.data.frame(read.csv(file)[,4])
+  colnames(df)<-file_id
+  combined_bin_sv_counts<-cbind(combined_bin_sv_counts, df)
+}
+rownames(combined_bin_sv_counts)<-paste0(combined_bin_sv_counts[,1], "_", combined_bin_sv_counts[,2], "_", combined_bin_sv_counts[,3])
+
+matrix<-combined_bin_sv_counts[,c(10:ncol(combined_bin_sv_counts), 8, 9, 5, 6, 7, 4)]
+mat<-t(matrix)
+
+set.seed(123)
+color_df<-data.frame(color = rand_color(24, transparency = 0.5), chr = c(paste0("chr", c(1:22, "X", "Y"))))
+rownames(color_df)<-color_df$chr
+
+color_chr_list<-color_df$color
+names(color_chr_list)<-color_df$chr
+
+chr_annotation<-HeatmapAnnotation(
+  chr = factor(combined_bin_sv_counts$chr, levels = c(unique(combined_bin_sv_counts$chr))),
+  col = list(chr = color_chr_list),
+  border = T
+)
+
+col_fun = colorRamp2(c(-5, 0, 50), c("blue", "grey95", "red"))
+#pdf(file = "/xdisk/mpadi/jiawenyang/result/centrosome_loss/circos/sv_per_bin_heatmap.pdf", height = 6, width = 9)
+Heatmap(mat,
+        name = "SV count per \n 10Mb genome",
+        #column_order = order(colnames(as.matrix(mat))),
+        cluster_columns = F,
+        cluster_rows = F,
+        col = col_fun,
+        #cluster_column_slices = FALSE,
+        #cluster_row_slices =FALSE,
+        column_gap = unit(0, "mm"),
+        column_split = factor(combined_bin_sv_counts$chr, levels = unique(combined_bin_sv_counts$chr)),
+        border = T,
+        show_column_names = F,
+        column_title_side="top",
+        column_title_rot = 90,
+        show_row_names = T,
+        row_names_side="left",
+        row_names_gp = gpar(fontsize = 4, fontface = "bold"),
+        #heatmap_legend_param = list(at = c(-20, 0, 20)),
+        top_annotation = chr_annotation)
+#dev.off()
+```
+
+### Finding hypermutation(sv) regions in transient centrosome-loss samples.
+```{r hypermuation(sv) region, warning = F, message = F}
+library(GenomicRanges)
+
+files_bin_sv_counts<-list.files(path = "/xdisk/mpadi/jiawenyang/result/centrosome_loss/circos/1Mbp_version", #for hyperSV regions, use bin size =1 Mbp version.
+                                #pattern = "*1OMbp_bin_counts.csv", #for 10mbp bin size 
+                                pattern = "*bin_counts.csv", # for 1 mbp bin size
+                                full.names = T,
+                                recursive = T)
+
+combined_bin_sv_counts<-read.csv(files_bin_sv_counts[1])[,1:3]
+for (file in files_bin_sv_counts){
+  #file =  "/xdisk/mpadi/jiawenyang/result/centrosome_loss/circos/CN2_2b_CKDN200005067-1A_H5T7VDSXY_L1_bin_counts.csv"  
+  file_id<-gsub("10Mbp_bin_counts.csv", "", strsplit(file, "/")[[1]][9])
+  df<-as.data.frame(read.csv(file)[,4])
+  colnames(df)<-file_id
+  combined_bin_sv_counts<-cbind(combined_bin_sv_counts, df)
+}
+rownames(combined_bin_sv_counts)<-paste0(combined_bin_sv_counts[,1], "_", combined_bin_sv_counts[,2], "_", combined_bin_sv_counts[,3])
+
+
+sv_others_all<-readRDS(file = "/xdisk/mpadi/jiawenyang/result/centrosome_loss/circos/sv_delly_others.RDS") #1 Mb bin 
+centromere_region<-read.table("/xdisk/mpadi/jiawenyang/data/centrosome_loss/wgs/hg38_centromere_region")
+centromere_region<-centromere_region[,1:3]
+colnames(centromere_region)<-c("chromosome", "start", "end")
+
+sv_count_matrix<-combined_bin_sv_counts[,4:ncol(combined_bin_sv_counts)]
+sv_count_matrix<-sv_count_matrix[,c(7,8,9)]
+#sv_count_matrix<-sv_count_matrix[,c(1, 3, 4, 7:ncol(sv_count_matrix))]
+hypermutation<-apply(sv_count_matrix, 1, sum)
+hypermutation<-hypermutation[order(hypermutation, decreasing = T)]
+hypermutation_region<-data.frame(chromosome = unlist(lapply(names(hypermutation), function(x) strsplit(x, "_")[[1]][1])),
+                                 start = unlist(lapply(names(hypermutation), function(x) strsplit(x, "_")[[1]][2])),
+                                 end = unlist(lapply(names(hypermutation), function(x) strsplit(x, "_")[[1]][3])), SV_counts = as.data.frame(hypermutation)$hypermutation)
+
+centromere_regions_gr<-makeGRangesFromDataFrame(centromere_region)
+hypermutation_regions_gr<-makeGRangesFromDataFrame(hypermutation_region, keep.extra.columns = T)
+overlaps<-findOverlaps(hypermutation_regions_gr, centromere_regions_gr)
+
+hypermutation_not_in_centromere_regions<-as.data.frame(hypermutation_regions_gr[-queryHits(overlaps)])
+hypermutation_not_in_centromere_regions<-hypermutation_not_in_centromere_regions[!duplicated(hypermutation_not_in_centromere_regions),]
+#write.csv(hypermutation_not_in_centromere_regions, file = "/xdisk/mpadi/jiawenyang/result/centrosome_loss/circos/hypermutation_not_in_centromere_regions.csv")
+hypermutation_in_centromere_regions<-as.data.frame(hypermutation_regions_gr[queryHits(overlaps)])
+hypermutation_in_centromere_regions<-hypermutation_in_centromere_regions[!duplicated(hypermutation_in_centromere_regions),]
+#write.csv(hypermutation_in_centromere_regions, file = "/xdisk/mpadi/jiawenyang/result/centrosome_loss/circos/hypermutation_in_centromere_regions.csv")
+
+
+n = 15 #Top15 hyermutation regions
+hypermutation_sites<-hypermutation_not_in_centromere_regions[1:n,c(1:3)]
+colnames(hypermutation_sites)<-c("chr", "start", "end")
+
+hypermutation_centromese_sites<-hypermutation_in_centromere_regions[1:n,c(1:3)]
+colnames(hypermutation_centromese_sites)<-c("chr", "start", "end")
+
+
+hypermutation_gr<-hypermutation_sites
+
+find_sv_in_hypermutation_region <- function(sv_tab) {
+  hypermutation_sv <- data.frame()
+  hypermutation_sv_per_region<-data.frame()
+  for (k in 1:nrow(hypermutation_gr)) {
+    hyper_gr<-hypermutation_gr[k,]
+    interval<-c(as.numeric(hyper_gr[,"start"]), as.numeric(hyper_gr[,"end"]))
+    for (j in 1:nrow(sv_tab)) {
+          chr <- sv_tab[j, "CHROM_A"]
+          pos <- as.numeric(sv_tab[j, "START_A"]) + (as.numeric(sv_tab[j, "END_A"]) - as.numeric(sv_tab[j, "START_A"]))/ 2
+          if ((pos >= interval[1]+1) & (pos <= interval[2] ) & chr == hyper_gr[, "chr"]) {
+             sv_df<-sv_tab[j,]
+             sv_df[,"site"]<-paste0(hyper_gr$chr, ":", hyper_gr$start, "-", hyper_gr$end)
+          }
+          else {
+              next
+          }
+          hypermutation_sv<-rbind(hypermutation_sv, sv_df)
+      }
+    }
+  return(hypermutation_sv)
+}
+
+cn9<-as.data.frame(find_sv_in_hypermutation_region(sv_others_all$`CN_9_1_CKDN200002996-1A_H57L2DSXY_L1`))
+#cn6<-as.data.frame(find_sv_in_hypermutation_region(sv_others_all$`CN_6_1_CKDN200002994-1A_H57L2DSXY_L1`))
+#cn1<-as.data.frame(find_sv_in_hypermutation_region(sv_others_all$`CN_1_1_CKDN200002992-1A_H57L2DSXY_L1`))
+cn9r2_2<-as.data.frame(find_sv_in_hypermutation_region(sv_others_all$`CN2_2b_CKDN200005067-1A_H5T7VDSXY_L1`))
+
+#make bar plot for hypermutation region for cn9 and cn9r2_2
+library(dplyr)
+cn9_count<-as.data.frame(cn9 %>% group_by(site) %>% dplyr::count(TYPE))
+cn9_count[,"sample"]<-rep("CN_9", nrow(cn9_count))
+#cn6_count<-as.data.frame(cn6 %>% group_by(site) %>% dplyr::count(TYPE))
+#cn6_count[,"sample"]<-rep("CN_6", nrow(cn6_count))
+#cn1_count<-as.data.frame(cn1 %>% group_by(site) %>% dplyr::count(TYPE))
+#cn1_count[,"sample"]<-rep("CN_1", nrow(cn1_count))
+
+cn9r2_2_count<-as.data.frame(cn9r2_2 %>% group_by(site) %>% dplyr::count(TYPE))
+cn9r2_2_count[,"sample"]<-rep("CN9R2_2", nrow(cn9r2_2_count))
+
+count_all<-rbind(cn9_count, cn9r2_2_count)
+#count_all<-rbind(cn1_count, cn6_count, cn9_count)
+colnames(count_all)<-c("site", "svtype", "count", "sample")
+
+library(ggplot2)
+p <- ggplot(data=count_all, 
+            aes(x=factor(sample, levels = c("CN9R2_2", "CN_9")), 
+                y=count, 
+                fill=sample)) +
+    scale_fill_manual(values=c("#ff7768", "#ffd600")) +
+    geom_bar(position = "stack", stat="identity") +
+    facet_grid(factor(site, levels = c(paste0(hypermutation_sites$chr, ":", hypermutation_sites$start, "-", hypermutation_sites$end))) ~ ., switch = "x" ) +
+    xlab("Top mon-centromeric genomic regions with clustered SVs") +                 
+    ylab("Total number of structural variants per 1Mbp") +   
+    ggtitle("Structural Variants in transient centrosome loss samples") + 
+    theme(panel.grid.major = element_blank(), 
+          panel.grid.minor = element_blank(),
+          panel.background = element_blank(), 
+          axis.line = element_line(colour = "black")) +
+    scale_y_continuous(expand = c(0, 0))+
+    theme_bw () +
+    theme(title = element_text(face = "bold"),
+          axis.text.y = element_blank(),
+          axis.ticks.y = element_blank(),
+          legend.title = element_text(face = "bold"),
+          legend.text = element_text(face = "bold"),
+          strip.text.x = element_blank(),
+          strip.text.y = element_text(angle = 0, face = "bold", hjust = 0),
+          #strip.background =element_rect(fill="white"),
+          legend.position = "top",
+          panel.spacing = unit(0,'lines')) +
+    coord_flip()
+
+#pdf(file ="/xdisk/mpadi/jiawenyang/result/centrosome_loss/circos/sv_per_bin_hotspot_non_centromeric_region.pdf")
+p
+#dev.off()
+```
+
+```{r centromeric reigion, eval = F, include = F, echo = F}
+n = 40 #TOP20 hyermutation regions
+hypermutation_centromere_sites<-hypermutation_in_centromere_regions[1:n,c(1:3)]
+colnames(hypermutation_centromere_sites)<-c("chr", "start", "end")
+
+
+hypermutation_gr<-hypermutation_centromere_sites
+
+
+find_sv_in_hypermutation_region <- function(sv_tab) {
+  hypermutation_sv <- data.frame()
+  hypermutation_sv_per_region<-data.frame()
+  for (k in 1:nrow(hypermutation_gr)) {
+    hyper_gr<-hypermutation_gr[k,]
+    interval<-c(as.numeric(hyper_gr[,"start"]), as.numeric(hyper_gr[,"end"]))
+    for (j in 1:nrow(sv_tab)) {
+          chr <- sv_tab[j, "CHROM_A"]
+          pos <- as.numeric(sv_tab[j, "START_A"]) + (as.numeric(sv_tab[j, "END_A"]) - as.numeric(sv_tab[j, "START_A"]))/ 2
+          if ((pos >= interval[1]+1) & (pos <= interval[2] ) & chr == hyper_gr[, "chr"]) {
+             sv_df<-sv_tab[j,]
+             sv_df[,"site"]<-paste0(hyper_gr$chr, ":", hyper_gr$start, "-", hyper_gr$end)
+          }
+          else {
+              next
+          }
+          hypermutation_sv<-rbind(hypermutation_sv, sv_df)
+      }
+    }
+  return(hypermutation_sv)
+}
+
+cn9<-as.data.frame(find_sv_in_hypermutation_region(sv_others_all$`CN_9_1_CKDN200002996-1A_H57L2DSXY_L1`))
+cn6<-as.data.frame(find_sv_in_hypermutation_region(sv_others_all$`CN_6_1_CKDN200002994-1A_H57L2DSXY_L1`))
+cn1<-as.data.frame(find_sv_in_hypermutation_region(sv_others_all$`CN_1_1_CKDN200002992-1A_H57L2DSXY_L1`))
+cn9r2_2<-as.data.frame(find_sv_in_hypermutation_region(sv_others_all$`CN2_2b_CKDN200005067-1A_H5T7VDSXY_L1`))
+
+#make bar plot for hypermutation region for cn9 and cn9r2_2
+library(dplyr)
+cn9_count<-as.data.frame(cn9 %>% group_by(site) %>% dplyr::count(TYPE))
+cn9_count[,"sample"]<-rep("CN_9", nrow(cn9_count))
+cn6_count<-as.data.frame(cn6 %>% group_by(site) %>% dplyr::count(TYPE))
+cn6_count[,"sample"]<-rep("CN_6", nrow(cn6_count))
+cn1_count<-as.data.frame(cn1 %>% group_by(site) %>% dplyr::count(TYPE))
+cn1_count[,"sample"]<-rep("CN_1", nrow(cn1_count))
+
+cn9r2_2_count<-as.data.frame(cn9r2_2 %>% group_by(site) %>% dplyr::count(TYPE))
+cn9r2_2_count[,"sample"]<-rep("CN9R2_2", nrow(cn9r2_2_count))
+
+count_all<-rbind(cn9_count, cn9r2_2_count)
+#count_all<-rbind(cn1_count, cn6_count, cn9_count)
+colnames(count_all)<-c("site", "svtype", "count", "sample")
+
+library(ggplot2)
+p <- ggplot(data=count_all, 
+            aes(x=factor(sample, levels = c("CN9R2_2", "CN_9")), 
+                y=count, 
+                fill=sample)) +
+    scale_fill_manual(values=c("#ff7768", "#ffd600")) +
+    geom_bar(position = "stack", stat="identity") +
+    facet_grid(factor(site, levels = unique(c(paste0(hypermutation_centromere_sites$chr, ":", hypermutation_centromere_sites$start, "-", hypermutation_centromere_sites$end)))) ~ ., switch = "x" ) +
+    xlab("Non-centromeric genomic regions") +                 
+    ylab("Total number of structural variants per 1Mbp") +   
+    ggtitle("Structural Variants in centrosome loss samples") + 
+    theme(panel.grid.major = element_blank(), 
+          panel.grid.minor = element_blank(),
+          panel.background = element_blank(), 
+          axis.line = element_line(colour = "black")) +
+    scale_y_continuous(expand = c(0, 0))+
+    theme_bw () +
+    theme(title = element_text(face = "bold"),
+          axis.text.y = element_blank(),
+          axis.ticks.y = element_blank(),
+          legend.title = element_text(face = "bold"),
+          legend.text = element_text(face = "bold"),
+          strip.text.x = element_blank(),
+          strip.text.y = element_text(angle = 0, face = "bold", hjust = 0),
+          #strip.background =element_rect(fill="white"),
+          legend.position = "top",
+          panel.spacing = unit(0,'lines')) +
+    coord_flip()
+
+#pdf(file ="/xdisk/mpadi/jiawenyang/result/centrosome_loss/circos/sv_per_bin_hotspot_in_centromeric_region.pdf")
+p
+#dev.off()
+```
+
+
+```{r transient centrosome-loss cells clustered SVs regions characterization, include = F, echo = F, eval = F}
+p <- ggplot(data=count_all, 
+            aes(x=factor(sample, levels = c("CN_1","CN_6","CN_9")), 
+                y=count, 
+                fill=sample)) +
+    scale_fill_manual(values=c("#ff7768", "#ffd600", "orange")) +
+    geom_bar(position = "stack", stat="identity") +
+    facet_grid(factor(site, levels = c(paste0(hypermutation_sites$chr, ":", hypermutation_sites$start, "-", hypermutation_sites$end))) ~ ., switch = "x" ) +
+    xlab("Non-centromeric genomic regions") +                 
+    ylab("Total number of structural variants per 1Mbp") +   
+    ggtitle("Structural Variants in centrosome loss samples") + 
+    theme(panel.grid.major = element_blank(), 
+          panel.grid.minor = element_blank(),
+          panel.background = element_blank(), 
+          axis.line = element_line(colour = "black")) +
+    scale_y_continuous(expand = c(0, 0))+
+    theme_bw () +
+    theme(title = element_text(face = "bold"),
+          axis.text.y = element_blank(),
+          axis.ticks.y = element_blank(),
+          legend.title = element_text(face = "bold"),
+          legend.text = element_text(face = "bold"),
+          strip.text.x = element_blank(),
+          strip.text.y = element_text(angle = 0, face = "bold", hjust = 0),
+          #strip.background =element_rect(fill="white"),
+          legend.position = "top",
+          panel.spacing = unit(0,'lines')) +
+    coord_flip()
+
+#pdf(file ="/xdisk/mpadi/jiawenyang/result/centrosome_loss/circos/sv_per_bin_hotspot.pdf")
+p
+```
+
+# Characterizing CNV profiles of transient centrosome-loss samples
+
+## Visualizing CNV data from CNVkit
+```{sh Visualize CNV result from CNVkit output, eval = F, include = T, echo = T}
+apptainer exec /xdisk/mpadi/jiawenyang/bin/cnvkit/cnvkit_latest.sif cnvkit.py heatmap `cat /xdisk/mpadi/jiawenyang/bin/cnvkit/cnvkit_wgs_cns.txt` -o /xdisk/mpadi/jiawenyang/bin/cnvkit/CNVkit_heatmap.pdf
+```
+
+```{r out.height = "400px", out.width='1000px', echo=T,  include=TRUE}
+knitr::include_graphics("/xdisk/mpadi/jiawenyang/bin/cnvkit/CNVkit_heatmap.pdf")
+```
+
+## Calculating sample distance based on CNVs per bin
+
+### Combining CNVs data from transient centrosome-loss samples
+```{r count CNVs per bin and calculate distance between sampales, eval = F, include = T, echo = T}
+library(GenomicRanges)
+library(dplyr)
+
+files<-list.files(path = "/xdisk/mpadi/jiawenyang/result/centrosome_loss/cnvkit_wgs",
+                  pattern = ".cnr$",
+                  recursive = T,
+                  full.names = T)
+
+cnv_df<-read.table(files[1], sep = "\t", quote = "")[-1,c("V1","V2", "V3", "V6")]
+colnames(cnv_df)<-c("chromosome", "start", "end", "log2")
+for (i in 2:length(files)){
+  file<-read.table(files[i], sep = "\t", quote = "")[-1,c("V1","V2", "V3", "V6")]
+  colnames(file)<-c("chromosome", "start", "end", "log2")
+  cnv_df<-left_join(cnv_df, file, by = c("start", "end", "chromosome"))
+}
+
+sample_id<-unlist(lapply(files, function(x) strsplit(x, "/")[[1]][8]))
+sample_id<-unlist(lapply(sample_id, function(x) strsplit(x, "[.]")[[1]][1]))
+
+colnames(cnv_df)<-c("chromosome", "start", "end", sample_id)
+#saveRDS(cnv_df, file = "/xdisk/mpadi/jiawenyang/result/centrosome_loss/cnvkit_wgs/cnv_bins_for_heatmap.rds")
+```
+
+### Calculating sample distance and performing hierarchiecal clustering
+```{r Calculating sample distance and performing hiearchiecal clustering, include = T, echo = T, eval = T, message = F, warning = F, fig.height = 10, fig.width = 8}
+cnv_df<-readRDS(file = "/xdisk/mpadi/jiawenyang/result/centrosome_loss/cnvkit_wgs/cnv_bins_for_heatmap.rds")
+cnv_df[,"ID"]<-paste0(cnv_df$chromosome, "-", cnv_df$start, "-", cnv_df$end)
+cnv_mt<-cnv_df[,c(4:12)]
+rownames(cnv_mt)<-cnv_df$ID
+
+# Finding distance matrix
+distance_mat <- dist(t(cnv_mt), method = 'euclidean')
+distance_mat
+
+# Fitting Unsupervised Hierarchical clustering Model
+set.seed(240)  # Setting seed
+Hierar_cl <- hclust(distance_mat, method = "average")
+Hierar_cl
+
+# Plotting dendrogram
+#pdf(file = "/xdisk/mpadi/jiawenyang/result/centrosome_loss/cnvkit_wgs/Unsupervised_Hierarchical_clustering_on_samples.pdf")
+plot(Hierar_cl)
+#dev.off()
+```
+
+## Summarizing consistent CNV regions from xenograft tumor tissue 
+```{r summarize cnv data from all centrosome samples, eval = T, include = T, echo = T, message = F, warning = F}
+library(GenomicRanges)
+library(biovizBase)
+library(RCircos)
+library(DT)
+
+
+files<-list.files(path = "/xdisk/mpadi/jiawenyang/result/centrosome_loss/cnvkit_wgs",
+                  pattern = "cns$",
+                  recursive = T,
+                  full.names = T)
+tumor_files<-files[c(3,6,9,12)]
+
+chrs<-paste0("chr", c(1:22, "X", "Y"))
+
+cnv_df<-read.table(tumor_files[1], sep = "\t", quote = "")[-1,c("V1","V2", "V3", "V5")]
+id<-strsplit(strsplit(tumor_files[1], "/")[[1]][8], "[.]")[[1]][1]
+colnames(cnv_df)<-c("chromosome", "start", "end", id)
+cnv_df<-cnv_df[cnv_df$chromosome %in% chrs,]
+cnv_gain<-cnv_df[cnv_df[, id] >= 0.58, ] #log2(3/2)
+cnv_loss<-cnv_df[cnv_df[, id] < (-1), ] #log2(1/2)
+cnv_gain_gr_all<-makeGRangesFromDataFrame(cnv_gain)
+cnv_loss_gr_all<-makeGRangesFromDataFrame(cnv_loss)
+
+for (i in 2:length(tumor_files)){
+  cnv_df<-read.table(tumor_files[i], sep = "\t", quote = "")[-1,c("V1","V2", "V3", "V5")]
+  id<-strsplit(strsplit(tumor_files[i], "/")[[1]][8], "[.]")[[1]][1]
+  colnames(cnv_df)<-c("chromosome", "start", "end", id)
+  cnv_df<-cnv_df[cnv_df$chromosome %in% chrs,]
+  cnv_gain<-cnv_df[cnv_df[, id] >= 0.58, ]
+  cnv_loss<-cnv_df[cnv_df[, id] < (-1), ]
+  cnv_gain_gr<-makeGRangesFromDataFrame(cnv_gain)
+  cnv_loss_gr<-makeGRangesFromDataFrame(cnv_loss)
+  
+  cnv_gain_gr_all<-subsetByOverlaps(cnv_gain_gr_all, cnv_gain_gr)
+  cnv_loss_gr_all<-subsetByOverlaps(cnv_loss_gr_all, cnv_loss_gr)
+}
+
+olps_gain<-GenomicRanges::reduce(cnv_gain_gr_all)
+olps_loss<-GenomicRanges::reduce(cnv_loss_gr_all)
+values(olps_gain) <- DataFrame(cnv_state = rep("gain", length(olps_gain)))
+values(olps_loss) <- DataFrame(cnv_state = rep("loss", length(olps_loss)))
+
+data("UCSC.HG38.Human.CytoBandIdeogram")
+data(ideoCyto, package = "biovizBase")
+
+colnames(UCSC.HG38.Human.CytoBandIdeogram)<-c("Chromosome", "start", "end", "name", "gieStain")
+cyto.info<-makeGRangesFromDataFrame(UCSC.HG38.Human.CytoBandIdeogram,keep.extra.columns = T)
+
+cytobands_annotation_cnv_gain<-findOverlaps(olps_gain, cyto.info)
+cytobands_annotation_cnv_loss<-findOverlaps(olps_loss, cyto.info)
+
+cnv_gain_cytobands<-cbind(as.data.frame(olps_gain[queryHits(cytobands_annotation_cnv_gain),])[,c("seqnames", "start", "end")],  
+                               as.data.frame(cyto.info[subjectHits(cytobands_annotation_cnv_gain), ])[, "name"])
+colnames(cnv_gain_cytobands) <- c("seqnames", "start", "end", "cytobands")
+                        
+cnv_loss_cytobands<-cbind(as.data.frame(olps_loss[queryHits(cytobands_annotation_cnv_loss),])[,c("seqnames", "start", "end")],  
+                               as.data.frame(cyto.info[subjectHits(cytobands_annotation_cnv_loss), ])[, "name"])
+colnames(cnv_loss_cytobands) <- c("seqnames", "start", "end", "cytobands")  
+
+#Show consistently gain regions
+DT::datatable(cnv_gain_cytobands)
+#write.csv(cnv_gain_cytobands, file = "/xdisk/mpadi/jiawenyang/result/centrosome_loss/cnvkit_wgs/xenograft_tumor_consistent_gain_regions.csv")
+
+#Show consistently loss regions
+DT::datatable(cnv_loss_cytobands)
+#write.csv(cnv_loss_cytobands, file = "/xdisk/mpadi/jiawenyang/result/centrosome_loss/cnvkit_wgs/xenograft_tumor_consistent_loss_regions.csv")
+```
+
+
+## Visualizing the consistent CNV regions on cytogenetic bands
+```{r visualize consistent CNV regions from xenograft tumor tissues derived from CTN-9 transient centrosome loss cells, include = T, echo = T, eval = T, message=FALSE, warning=FALSE}
+
+library(biovizBase)
+library(GenomeInfoDb)
+library(ggbio)
+library(RCircos)
+
+seqlengths(olps_gain)<-seqlengths(ideoCyto$hg19)[names(seqlengths(olps_gain))]
+seqlengths(olps_loss)<-seqlengths(ideoCyto$hg19)[names(seqlengths(olps_loss))]
+
+#pdf(file = "/xdisk/mpadi/jiawenyang/result/centrosome_loss/cnvkit_wgs/cnv_gain_regions.pdf")
+p_gain= autoplot(cyto.info[seqnames(cyto.info) %in% seqnames(olps_gain)], layout = "karyogram", cytobands = T )  + 
+    layout_karyogram(data = olps_gain, aes(color = cnv_state, fill = cnv_state), size = 0.5, geom = "rect") +
+    labs(colour = "cnv_state") +
+    scale_color_manual(labels = c("gain"), values = c("orange")) +
+    scale_fill_manual(labels = c("gneg", "gpos100", "gpos25", "gpos50", "gpos75", "gvar", "stalk", "acen", "cnv_state"), values = c(c("#f9f9f9", "#474747", "#cecece", "#a0a0a0", "#737373", "#474747", "#d36c6c", "#8b2323"), alpha(c("#cc0000"), 0.6)))
+  print(p_gain)
+#dev.off()
+
+#pdf(file = "/xdisk/mpadi/jiawenyang/result/centrosome_loss/cnvkit_wgs/cnv_loss_regions.pdf")  
+p_loss= autoplot(cyto.info[seqnames(cyto.info) %in% seqnames(olps_loss)], layout = "karyogram", cytobands = T )  + 
+    layout_karyogram(data = olps_loss, aes(color = cnv_state, fill = cnv_state), size = 0.5, geom = "rect") +
+    labs(colour = "cnv_state") +
+    scale_color_manual(labels = c("loss"), values = c("purple")) +
+    scale_fill_manual(labels = c("gneg", "gpos100", "gpos25", "gpos50", "gpos75", "gvar", "stalk", "acen", "cnv_state"), values = c(c("#f9f9f9", "#474747", "#cecece", "#a0a0a0", "#737373", "#474747", "#d36c6c", "#8b2323"), alpha(c("#3399ff"), 0.5)))
+  print(p_loss)
+#dev.off()
+```
+
+
+
