@@ -1,0 +1,4 @@
+Samples	Stability	Total Mutations
+CNV48A	0.982	1812
+CNV48B	0.975	1478
+CNV48C	0.944	836
