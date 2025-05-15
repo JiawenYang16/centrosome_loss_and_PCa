@@ -1,0 +1,10 @@
+"","ensembl_gene_id","hgnc_symbol","chromosome_name","band","description","start_position","end_position","entrezgene_id"
+"1","ENSG00000068489","PRR11",17,"q22","proline rich 11 [Source:HGNC Symbol;Acc:HGNC:25619]",59155732,59206709,55771
+"2","ENSG00000110075","PPP6R3",11,"q13.2","protein phosphatase 6 regulatory subunit 3 [Source:HGNC Symbol;Acc:HGNC:1173]",68460731,68615334,55291
+"3","ENSG00000119673","ACOT2",14,"q24.3","acyl-CoA thioesterase 2 [Source:HGNC Symbol;Acc:HGNC:18431]",73567620,73575658,10965
+"4","ENSG00000129946","SHC2",19,"p13.3","SHC adaptor protein 2 [Source:HGNC Symbol;Acc:HGNC:29869]",416589,461033,25759
+"5","ENSG00000136824","SMC2",9,"q31.1","structural maintenance of chromosomes 2 [Source:HGNC Symbol;Acc:HGNC:14011]",104094260,104141419,10592
+"6","ENSG00000138160","KIF11",10,"q23.33","kinesin family member 11 [Source:HGNC Symbol;Acc:HGNC:6388]",92574105,92655395,3832
+"7","ENSG00000148229","POLE3",9,"q32","DNA polymerase epsilon 3, accessory subunit [Source:HGNC Symbol;Acc:HGNC:13546]",113407235,113410675,54107
+"8","ENSG00000163444","TMEM183A",1,"q32.1","transmembrane protein 183A [Source:HGNC Symbol;Acc:HGNC:20173]",203007374,203024848,92703
+"9","ENSG00000198046","ZNF667",19,"q13.43","zinc finger protein 667 [Source:HGNC Symbol;Acc:HGNC:28854]",56439325,56478065,63934
