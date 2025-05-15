@@ -1,0 +1,115 @@
+cytoband	8p11.23	1q21.3	4q21.21	7p14.3	
+q value	0.07598	0.20853	0.20853	0.21016	
+residual q value	0.07598	0.20853	0.20853	0.21016	
+wide peak boundaries	chr8:36863502-37864225	chr1:150050799-153123946	chr4:81253217-81651286	chr7:33084394-33596870	
+genes in wide peak	ERLIN2	ARNT	RASGEF1B	RP9	
+	PROSC	CTSK		BBS9	
+	ADGRA2	CTSS			
+	BRF2	ECM1			
+	ZNF703	ENSA			
+	RAB11FIP1	FLG			
+	KCNU1	IVL			
+	LOC728024	MCL1			
+	LINC01605	SMCP			
+	LOC101929622	PI4KB			
+	LOC102723701	PSMB4			
+		PSMD4			
+		RFX5			
+		RORC			
+		S100A10			
+		S100A11			
+		SPRR1A			
+		SPRR1B			
+		SPRR2A			
+		SPRR2B			
+		SPRR2D			
+		SPRR2E			
+		SPRR2F			
+		SPRR3			
+		VPS72			
+		TCHH			
+		TUFT1			
+		PIP5K1A			
+		ANXA9			
+		SELENBP1			
+		PRPF3			
+		SETDB1			
+		SEMA6C			
+		MLLT11			
+		TDRKH			
+		CELF3			
+		VPS45			
+		POGZ			
+		RPRD2			
+		CA14			
+		LCE2B			
+		TMOD4			
+		CERS2			
+		CRNN			
+		APH1A			
+		PLEKHO1			
+		OAZ3			
+		MRPS21			
+		ADAMTSL4			
+		CRCT1			
+		C1orf56			
+		GOLPH3L			
+		FAM63A			
+		CDC42SE1			
+		CGN			
+		ZNF687			
+		PRUNE1			
+		MRPL9			
+		SCNM1			
+		TNFAIP8L2			
+		C1orf54			
+		TARS2			
+		SNX27			
+		ANP32E			
+		HORMAD1			
+		LCE3D			
+		THEM4			
+		GABPB2			
+		TCHHL1			
+		RPTN			
+		CIART			
+		BNIPL			
+		SPRR4			
+		LCE4A			
+		LCE5A			
+		RIIAD1			
+		THEM5			
+		LINGO4			
+		FLG-AS1			
+		LCE1A			
+		LCE1B			
+		LCE1C			
+		LCE1D			
+		LCE1E			
+		LCE1F			
+		LCE2A			
+		LCE2C			
+		LCE2D			
+		LCE3A			
+		LCE3B			
+		LCE3C			
+		LCE3E			
+		LYSMD1			
+		HRNR			
+		FLG2			
+		NBPF18P			
+		KPRP			
+		LCE6A			
+		ADAMTSL4-AS1			
+		MIR554			
+		C1orf68			
+		LOC100131107			
+		LOC100132111			
+		C2CD4D			
+		MIR4257			
+		LOC100507670			
+		TNFAIP8L2-SCNM1			
+		FALEC			
+		GBAT2			
+		MIR6878			
+		LOC105371433			
